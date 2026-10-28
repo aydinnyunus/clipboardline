@@ -355,29 +355,26 @@ struct PublicLinkHTMLMetadata: Equatable, Sendable {
     let author: String?
     let thumbnailURL: URL?
 
+    /// Metadata lives in the document head, so this window caps the bytes one parse looks at. The tags
+    /// inside it are collected by a forward scan instead of by regular expressions: a quantified
+    /// pattern costs one rescan of the remaining window for every candidate tag, so markup repeating
+    /// an opening tag without ever closing it costs time by the square of the window, and shrinking
+    /// the window only scales that square down. A scan visits each candidate once.
+    static let metadataWindowBytes = 32 * 1024
+    /// Characters a tag may spend reaching its `>`, kept at the budgets the patterns used.
+    private static let metaAttributeWindowCharacters = 8192
+    private static let tagAttributeWindowCharacters = 4096
+    private static let titleBodyWindowCharacters = 8192
+
     init(data: Data, url: URL, contentType: String = "") throws {
         guard data.count <= 512 * 1024 else { throw PublicLinkError.tooLarge }
-        let source = Self.decode(data, contentType: contentType)
-        let html = Self.replacing(#"(?is)<!--.*?-->|<script\b[^>]*>.*?</script\s*>|<style\b[^>]*>.*?</style\s*>"#, in: source, with: "")
-        let tags = try NSRegularExpression(pattern: #"(?is)<meta\b([^>]{0,8192})>"#)
-        let attributes = try NSRegularExpression(pattern: #"([A-Za-z_:][A-Za-z0-9_:.-]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))"#)
-        var metadata: [String: String] = [:]
-        for tag in tags.matches(in: html, range: NSRange(html.startIndex..., in: html)).prefix(256) {
-            guard let range = Range(tag.range(at: 1), in: html) else { continue }
-            let raw = String(html[range]); var values: [String: String] = [:]
-            for attribute in attributes.matches(in: raw, range: NSRange(raw.startIndex..., in: raw)) {
-                guard let key = Range(attribute.range(at: 1), in: raw),
-                      let value = (2...4).compactMap({ Range(attribute.range(at: $0), in: raw) }).first else { continue }
-                values[String(raw[key]).lowercased()] = Self.entities(String(raw[value]))
-            }
-            if let key = values["property"] ?? values["name"], let value = values["content"], metadata[key.lowercased()] == nil { metadata[key.lowercased()] = String(value.prefix(2000)) }
-        }
-        let titleTag = try NSRegularExpression(pattern: #"(?is)<title\b[^>]*>(.{0,8192}?)</title\s*>"#)
-        let titleMatch = titleTag.firstMatch(in: html, range: NSRange(html.startIndex..., in: html))
-            .flatMap { Range($0.range(at: 1), in: html) }.map { Self.entities(Self.replacing(#"<[^>]*>"#, in: String(html[$0]), with: "")) }
-        title = Self.clean(metadata["og:title"] ?? metadata["twitter:title"] ?? titleMatch, limit: 500)
-        author = Self.clean(metadata["author"] ?? metadata["og:site_name"], limit: 200)
-        let image = metadata["og:image:secure_url"] ?? metadata["og:image"] ?? metadata["twitter:image"]
+        // Decode inside the window, so a long tail costs neither parse time nor UTF-8 repair.
+        let head = Self.window(of: data)
+        let source = Self.decode(head, contentType: contentType)
+        let found = Self.read(source)
+        title = Self.clean(found.metadata["og:title"] ?? found.metadata["twitter:title"] ?? found.title, limit: 500)
+        author = Self.clean(found.metadata["author"] ?? found.metadata["og:site_name"], limit: 200)
+        let image = found.metadata["og:image:secure_url"] ?? found.metadata["og:image"] ?? found.metadata["twitter:image"]
         thumbnailURL = image.flatMap { URL(string: $0, relativeTo: url)?.absoluteURL }.flatMap { PublicLinkDestination($0)?.url }
     }
     /// Encoding sniffing order, as in windows/lib/network.cjs decodeHTML: UTF-8 BOM, Content-Type charset,
@@ -408,10 +405,107 @@ struct PublicLinkHTMLMetadata: Equatable, Sendable {
         let name = label.lowercased(), converted = CFStringConvertIANACharSetNameToEncoding((aliases[name] ?? name) as CFString)
         guard converted != 0xFFFF_FFFF else { return nil }
         return String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(converted))
+    /// One pass over the document collecting `<meta>` values and the first `<title>` body, skipping
+    /// comment, script and style content. Those bodies have no length of their own, so they are
+    /// skipped by searching for the closing token from a marker that only moves forward: one failed
+    /// search settles every later candidate in the same document.
+    private static func read(_ html: String) -> (metadata: [String: String], title: String?) {
+        let attributes = try! NSRegularExpression(pattern: #"([A-Za-z_:][A-Za-z0-9_:.-]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))"#)
+        var metadata: [String: String] = [:]
+        var title: String?
+        var examinedTags = 0
+        var cursor = html.startIndex
+        var closings: [String: (searched: String.Index, found: String.Index?)] = [:]
+        let lastAngle = html.lastIndex(of: ">")
+        /// Where a closing token lies at or after `position`. Requests for one token arrive in increasing
+        /// order, so the stretch already walked is remembered per token: a search that found nothing runs
+        /// once per document, and a search that hit only resumes from that hit.
+        func closingToken(_ token: String, atOrAfter position: String.Index) -> String.Index? {
+            if let known = closings[token], known.searched <= position {
+                guard let found = known.found else { return nil }
+                if found >= position { return found }
+            }
+            let found = position < html.endIndex
+                ? html.range(of: token, options: .caseInsensitive, range: position..<html.endIndex)?.lowerBound
+                : nil
+            closings[token] = (position, found)
+            return found
+        }
+        func tagEnd(after position: String.Index, window: Int) -> String.Index? {
+            guard let lastAngle, lastAngle >= position else { return nil }
+            let limit = html.index(position, offsetBy: window, limitedBy: html.endIndex) ?? html.endIndex
+            return html.range(of: ">", range: position..<limit)?.lowerBound
+        }
+        func opens(_ token: String, at position: String.Index) -> Bool {
+            guard let end = html.index(position, offsetBy: token.count, limitedBy: html.endIndex) else { return false }
+            return html[position..<end].lowercased() == token
+        }
+        func isWord(_ position: String.Index) -> Bool {
+            position != html.endIndex && (html[position].isLetter || html[position].isNumber || html[position] == "_")
+        }
+        while let open = html.range(of: "<", range: cursor..<html.endIndex)?.lowerBound {
+            cursor = html.index(after: open)
+            if opens("<!--", at: open) {
+                if let end = closingToken("-->", atOrAfter: html.index(open, offsetBy: 4)) { cursor = html.index(end, offsetBy: 3) }
+                continue
+            }
+            if opens("<script", at: open) || opens("<style", at: open) {
+                let name = opens("<script", at: open) ? "script" : "style"
+                let afterName = html.index(open, offsetBy: name.count + 1)
+                guard !isWord(afterName), let close = tagEnd(after: afterName, window: tagAttributeWindowCharacters) else { continue }
+                guard let end = closingToken("</" + name, atOrAfter: html.index(after: close)) else { continue }
+                var after = html.index(end, offsetBy: name.count + 2)
+                while after < html.endIndex, html[after].isWhitespace { after = html.index(after, offsetBy: 1) }
+                guard after < html.endIndex, html[after] == ">" else { continue }
+                cursor = html.index(after, offsetBy: 1)
+                continue
+            }
+            if opens("<meta", at: open) {
+                let afterName = html.index(open, offsetBy: 5)
+                guard !isWord(afterName), let close = tagEnd(after: afterName, window: metaAttributeWindowCharacters) else { continue }
+                // The count limits which tags are read, not where reading stops: metadata behind the
+                // budget is skipped while the rest of the document, title included, stays reachable.
+                guard examinedTags < 256 else { cursor = html.index(after: close); continue }
+                examinedTags += 1
+                let raw = String(html[afterName..<close]); var values: [String: String] = [:]
+                for attribute in attributes.matches(in: raw, range: NSRange(raw.startIndex..., in: raw)) {
+                    guard let key = Range(attribute.range(at: 1), in: raw),
+                          let value = (2...4).compactMap({ Range(attribute.range(at: $0), in: raw) }).first else { continue }
+                    values[String(raw[key]).lowercased()] = Self.entities(String(raw[value]))
+                }
+                if let key = values["property"] ?? values["name"], let value = values["content"], metadata[key.lowercased()] == nil { metadata[key.lowercased()] = String(value.prefix(2000)) }
+                cursor = html.index(after: close)
+                continue
+            }
+            if title == nil, opens("<title", at: open) {
+                let afterName = html.index(open, offsetBy: 6)
+                guard !isWord(afterName), let close = tagEnd(after: afterName, window: tagAttributeWindowCharacters) else { continue }
+                let bodyStart = html.index(after: close)
+                let bodyLimit = html.index(bodyStart, offsetBy: titleBodyWindowCharacters, limitedBy: html.endIndex) ?? html.endIndex
+                guard let end = html.range(of: "</title", options: .caseInsensitive, range: bodyStart..<bodyLimit)?.lowerBound else { continue }
+                var after = html.index(end, offsetBy: 7)
+                while after < bodyLimit, html[after].isWhitespace { after = html.index(after, offsetBy: 1) }
+                guard after < bodyLimit, html[after] == ">" else { continue }
+                title = Self.entities(Self.replacing(#"<[^>]*>"#, in: String(html[bodyStart..<end]), with: ""))
+                cursor = html.index(after, offsetBy: 1)
+                continue
+            }
+        }
+        return (metadata, title)
     }
     private static func replacing(_ pattern: String, in value: String, with replacement: String) -> String {
         guard let regex = try? NSRegularExpression(pattern: pattern) else { return value }
         return regex.stringByReplacingMatches(in: value, range: NSRange(value.startIndex..., in: value), withTemplate: replacement)
+    }
+    /// Truncates to the parsing window without cutting a UTF-8 sequence in half: the bytes before a
+    /// continuation byte belong to the same scalar, and a lead byte at the edge would start one that
+    /// never arrives. A cut in the middle of a sequence makes the whole document fail to decode.
+    private static func window(of input: Data) -> Data {
+        guard input.count > metadataWindowBytes else { return input }
+        var end = input.index(input.startIndex, offsetBy: metadataWindowBytes)
+        while end > input.startIndex, input[input.index(before: end)] & 0xC0 == 0x80 { end = input.index(before: end) }
+        if end > input.startIndex, input[input.index(before: end)] >= 0xC0 { end = input.index(before: end) }
+        return input[input.startIndex..<end]
     }
     private static func clean(_ value: String?, limit: Int) -> String? {
         guard let value else { return nil }

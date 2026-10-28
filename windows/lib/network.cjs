@@ -87,6 +87,31 @@ function decodeHTML(bytes, type = '') {
   try { return new TextDecoder('utf-8', {fatal: true}).decode(bytes); } catch { return new TextDecoder('windows-1252').decode(bytes); }
 }
 const collapse = value => value.replace(/\s+/g, ' ').trim();
+// The same document as /<title[^>]{0,4096}>([\s\S]{0,2000}?)<\/title>/i, but read in a single pass: a pattern
+// with a bounded body re-walks that body for every opening tag, so markup that repeats <title without ever
+// closing it costs time by the square of the parsed window. Where a tag ends and where the next </title>
+// lies are each remembered once, so every search moves forward; the 4096 characters a tag may spend
+// reaching its '>' and the 2000 body characters stay the budgets the pattern carried.
+function titleBody(html) {
+  const opener = /<title/gi, closer = /<\/title>/gi;
+  let hit, closerAt = -1, closerFrom = 0, angleAt = -1, angleFrom = 0;
+  while ((hit = opener.exec(html))) {
+    const start = hit.index + 6;
+    if (angleAt < start) angleAt = html.indexOf('>', angleFrom = start);
+    if (angleAt < 0) break;
+    if (angleAt - start > 4096) continue;
+    const body = angleAt + 1;
+    if (body > closerFrom) {
+      closer.lastIndex = closerFrom = body;
+      const found = closer.exec(html);
+      closerAt = found ? found.index : -1;
+      if (!found) break;
+    }
+    if (closerAt >= body && closerAt - body <= 2000) return html.slice(body, closerAt);
+  }
+  return '';
+}
+
 function meta(html, name) {
   for (const match of html.matchAll(/<meta\b([^>]{0,4096})>/gi)) {
     const attributes = {};
@@ -106,9 +131,11 @@ async function linkMetadata(input, fetcher = metadataFetch) {
     return {title: String(data.title || '').slice(0, 500), author: String(data.author_name || '').slice(0, 200), thumbnail: data.thumbnail_url || ''};
   }
   const response = await fetcher(url.href); if (!/text\/html|application\/xhtml/i.test(response.type)) return {title: url.hostname};
-  const html = decodeHTML(response.bytes, response.type);
+  // Metadata sits in the head of a real page, so only this window is decoded and parsed: the work one
+  // preview may cost stops being a function of the download. Same 32 KiB head window as the macOS parser.
+  const html = decodeHTML(response.bytes.subarray(0, 32 * 1024), response.type);
   // Collapse layout whitespace only in display text; og:image stays a URL.
-  const title = collapse(meta(html, 'og:title')) || collapse(entities((html.match(/<title[^>]*>([\s\S]{0,2000}?)<\/title>/i)?.[1] || '').replace(/<[^>]*>/g, ''))) || url.hostname;
+  const title = collapse(meta(html, 'og:title')) || collapse(entities(titleBody(html).replace(/<[^>]*>/g, ''))) || url.hostname;
   let thumbnail = meta(html, 'og:image');
   if (thumbnail) try { thumbnail = new URL(thumbnail, response.url).href; } catch { thumbnail = ''; }
   return {title: title.slice(0, 500), thumbnail};

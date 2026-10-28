@@ -109,6 +109,100 @@ import XCTest
         XCTAssertEqual(try page("<title>\(title)</title>", .utf8).title, title)
     }
 
+    func testParsingAWholeAllowedDocumentOfUnterminatedMarkupStaysInsideTheBudget() throws {
+        // One unclosed tag forces a scanner to walk to the end of the document looking for the `>`
+        // that never arrives, and every bad tag repeats that walk. Pinned here so the parsed work
+        // cannot quietly grow back to the size of the download.
+        let url = URL(string: "https://synthetic.example.invalid/article")!
+        let markup = "<!doctype html><html><head><title>" + String(repeating: "<meta name=description content=unclosed ", count: 8_192)
+        let page = markup + String(repeating: " ", count: 512 * 1024 - markup.count)
+        let data = Data(page.utf8)
+        XCTAssertEqual(data.count, 512 * 1024)
+        let started = DispatchTime.now().uptimeNanoseconds
+        let metadata = try PublicLinkHTMLMetadata(data: data, url: url)
+        let elapsedMilliseconds = Int((DispatchTime.now().uptimeNanoseconds - started) / 1_000_000)
+        XCTAssertNil(metadata.title, "an unterminated document carries no readable metadata")
+        XCTAssertLessThan(elapsedMilliseconds, 250, "parse of the full allowed document took \(elapsedMilliseconds) ms")
+        XCTAssertEqual(metadata, try PublicLinkHTMLMetadata(data: data.prefix(PublicLinkHTMLMetadata.metadataWindowBytes), url: url),
+                       "only the head window should be read, so the document tail must not change the result")
+    }
+
+    func testDenseUnterminatedMarkupWithOneClosingMarkerAtTheEndStaysInsideTheBudget() throws {
+        // A single '>' at the very end defeats a "drop the dangling tail" rule: every earlier tag is
+        // still open. A scanner pays for that walk once, a quantified pattern once per open tag.
+        let url = URL(string: "https://synthetic.example.invalid/article")!
+        let markup = String(repeating: "<meta name=description content=unclosed ", count: 8_192)
+        let page = markup + String(repeating: " ", count: 512 * 1024 - markup.count - 1) + ">"
+        let started = DispatchTime.now().uptimeNanoseconds
+        let metadata = try PublicLinkHTMLMetadata(data: Data(page.utf8), url: url)
+        let elapsedMilliseconds = Int((DispatchTime.now().uptimeNanoseconds - started) / 1_000_000)
+        XCTAssertNil(metadata.title)
+        XCTAssertLessThan(elapsedMilliseconds, 250, "dense unterminated markup took \(elapsedMilliseconds) ms")
+    }
+
+    func testUnterminatedTitleRunsStayInsideTheBudget() throws {
+        // A run of `<title` with one `>` parked at the end costs a quantified pattern once per open
+        // tag, because each one walks to that marker. A scanner walks it once and moves on.
+        let url = URL(string: "https://synthetic.example.invalid/article")!
+        let page = String(String(repeating: "<title", count: 88_000).prefix(512 * 1024 - 1)) + ">"
+        let data = Data(page.utf8)
+        XCTAssertEqual(data.count, 512 * 1024)
+        let started = DispatchTime.now().uptimeNanoseconds
+        let metadata = try PublicLinkHTMLMetadata(data: data, url: url)
+        let elapsedMilliseconds = Int((DispatchTime.now().uptimeNanoseconds - started) / 1_000_000)
+        XCTAssertNil(metadata.title)
+        XCTAssertLessThan(elapsedMilliseconds, 250, "unterminated title runs took \(elapsedMilliseconds) ms")
+    }
+
+    func testMetadataPastTheParsedWindowIsNotRead() throws {
+        let url = URL(string: "https://synthetic.example.invalid/article")!
+        let page = "<html><body>" + String(repeating: "<!-- x -->", count: 20_000) + #"<meta property="og:title" content="Tail">"#
+        XCTAssertNil(try PublicLinkHTMLMetadata(data: Data(page.utf8), url: url).title)
+    }
+
+    func testMetadataInsideTheParsedWindowIsStillReadThroughFiller() throws {
+        // A public host, like the thumbnail cases above: the destination policy is what rejects the .invalid host.
+        let url = URL(string: "https://public.example.org/page")!
+        let page = #"<html><head>"# + String(repeating: "<!-- x -->", count: 2_400)
+            + #"<meta property="og:title" content="Head"><meta name="author" content="Writer"><meta property="og:image" content="/cover.png">"#
+            + #"</head><body>text</body></html>"#
+        let metadata = try PublicLinkHTMLMetadata(data: Data(page.utf8), url: url)
+        XCTAssertEqual(metadata.title, "Head")
+        XCTAssertEqual(metadata.author, "Writer")
+        XCTAssertEqual(metadata.thumbnailURL?.path, "/cover.png")
+    }
+
+    func testTagNameCaseDoesNotChangeWhatIsRead() throws {
+        // Tag names carry no case guarantee in the field, so an all-caps document has to yield what the
+        // same document with lower-case tag names yields, values included staying exactly as written.
+        let url = URL(string: "https://public.example.org/page")!
+        let shouted = #"<html><head><META PROPERTY="og:title" CONTENT="Shout"><TITLE>Fallback</TITLE><meta NAME=AUTHOR CONTENT=Writer>"#
+        let whispered = #"<html><head><meta property="og:title" content="Shout"><title>Fallback</title><meta name=author content=Writer>"#
+        let loud = try PublicLinkHTMLMetadata(data: Data(shouted.utf8), url: url)
+        XCTAssertEqual(loud.title, "Shout")
+        XCTAssertEqual(loud.author, "Writer")
+        XCTAssertEqual(loud, try PublicLinkHTMLMetadata(data: Data(whispered.utf8), url: url))
+    }
+
+    func testUnclosedScriptOrCommentLeavesTheRestOfTheDocumentReadable() throws {
+        // An opening token with no closing token opens no body, so the document after it is still read.
+        // A script or style that does close hides what it contains, which the case above already pins.
+        let url = URL(string: "https://public.example.org/page")!
+        let afterScript = try PublicLinkHTMLMetadata(data: Data("<html><!-- never closed<script><meta name=author content='In'></script><meta property='og:title' content='Out'>".utf8), url: url)
+        XCTAssertEqual(afterScript.title, "Out")
+        XCTAssertNil(afterScript.author, "the script body hides its own metadata")
+        let openScript = try PublicLinkHTMLMetadata(data: Data("<html><script>var a = 1;<meta property='og:title' content='StillRead'>".utf8), url: url)
+        XCTAssertEqual(openScript.title, "StillRead")
+    }
+
+    func testOnlyTheFirst256MetaTagsAreConsidered() throws {
+        let url = URL(string: "https://public.example.org/page")!
+        let filler = (0..<256).map { #"<meta name="k"# + String($0) + #"" content="v">"# }.joined()
+        let page = filler + #"<meta property="og:title" content="Late"><title>Fallback</title>"#
+        let metadata = try PublicLinkHTMLMetadata(data: Data(page.utf8), url: url)
+        XCTAssertEqual(metadata.title, "Fallback")
+    }
+
     func testHTMLExtractsBoundedTextAndOneSafeThumbnailWithoutExecutingOrFollowingOtherResources() throws {
         let url = URL(string: "https://public.example.org/page")!
         let html = #"<html><!--<meta property='og:title' content='comment'>--><script><meta property='og:title' content='script'>fetch('http://localhost')</script><title>fallback</title><meta content='A &amp; B &#x1F30D;' property='og:title'><meta name=author content='Writer'><meta property='og:image' content='/cover.png'><img src='http://localhost/tracking'><iframe src='http://localhost'></iframe></html>"#
