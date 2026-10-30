@@ -541,6 +541,7 @@ enum HistoryTestRunner {
             ("testRapidQueriesCannotOverwriteLatestSearchAndRetainFocusOnMetadataChange", libraryInteraction.testRapidQueriesCannotOverwriteLatestSearchAndRetainFocusOnMetadataChange),
             ("testRemovingLastVisibleItemClearsInspectorAndFiltersRecoverSameScope", libraryInteraction.testRemovingLastVisibleItemClearsInspectorAndFiltersRecoverSameScope),
             ("testSubfolderTitleIncludesItsParentLikeWindows", libraryInteraction.testSubfolderTitleIncludesItsParentLikeWindows),
+            ("testRestoringFromTrashSelectsTheFirstRemainingItemLikeWindows", libraryInteraction.testRestoringFromTrashSelectsTheFirstRemainingItemLikeWindows),
             ("testInspectorEditsPersistAndFailedSaveKeepsDraftAndSelection", libraryInteraction.testInspectorEditsPersistAndFailedSaveKeepsDraftAndSelection),
             ("testMixedTransferExportAndDragPreserveRepresentationsOrderAndOriginals", libraryInteraction.testMixedTransferExportAndDragPreserveRepresentationsOrderAndOriginals),
             ("testYouTubeParserIgnoresHTMLAndRejectsMalformedOrUntrustedImages", libraryInteraction.testYouTubeParserIgnoresHTMLAndRejectsMalformedOrUntrustedImages),
