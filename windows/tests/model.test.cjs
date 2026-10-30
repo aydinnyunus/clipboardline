@@ -175,3 +175,8 @@ test('link preview metadata stores its thumbnail only while the link still exist
  assert.equal(live.title,'Title');assert.equal(live.author,'Writer');assert.deepEqual(files(),[live.thumbnailFile]);
  assert.equal(s.setLinkMetadata(live,'https://example.com/other',{title:'X'}),false);assert.equal(live.title,'Title');
 }));
+test('pin on a mixed selection pins every item and only a fully pinned selection unpins like macOS',()=>fixture(s=>{
+ const a=s.insert('text','first pin'),b=s.insert('text','second pin'),pinned=()=>[a,b].map(value=>s.item(value.id).pinned);
+ s.modify('pin',{ids:[a.id]});s.modify('pin',{ids:[a.id,b.id]});assert.deepEqual(pinned(),[true,true]);
+ s.modify('pin',{ids:[a.id,b.id]});assert.deepEqual(pinned(),[false,false]);
+}));
