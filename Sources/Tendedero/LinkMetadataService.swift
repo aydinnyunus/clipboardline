@@ -106,6 +106,8 @@ struct LinkMetadata: Equatable {
         }
         return (LinkMetadata(title: response.title, author: response.author_name), imageURL)
     }
+    /// Requests one page and reads its preview. Cancellation is checked on both sides of the parse
+    /// because that parse runs detached and cannot be interrupted once it has started.
     static func fetchMetadata(_ url: URL) async throws -> LinkMetadata {
         guard PublicLinkDestination(url) != nil else { throw PublicLinkError.blockedURL }
         let network = PublicLinkNetwork()
