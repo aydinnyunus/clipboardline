@@ -108,11 +108,14 @@ import Combine
         case let .tag(id): "#" + (tags.first { $0.id == id }?.name ?? L("Tag"))
         }
     }
-    /// A subfolder reads "Parent / Child", as on Windows.
+    /// A subfolder reads "Parent / Middle / Child" (the whole parent chain, cycle-safe), as on Windows.
     private func folderPath(_ id: UUID) -> String? {
-        guard let folder = collections.first(where: { $0.id == id }) else { return nil }
-        let parent = folder.parentID.flatMap { parentID in collections.first { $0.id == parentID }?.name }
-        return [parent, folder.name].compactMap { $0 }.joined(separator: " / ")
+        guard collections.contains(where: { $0.id == id }) else { return nil }
+        var names: [String] = [], visited = Set<UUID>(), next: UUID? = id
+        while let current = next, visited.insert(current).inserted, let folder = collections.first(where: { $0.id == current }) {
+            names.insert(folder.name, at: 0); next = folder.parentID
+        }
+        return names.joined(separator: " / ")
     }
     func clearNotice() { notice = nil; store.notice = nil }
     func report(_ message: String) { notice = message }
