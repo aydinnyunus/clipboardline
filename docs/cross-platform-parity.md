@@ -50,7 +50,9 @@ renderer test that runs the shipped export through the Export shortcut.
 `localized-selection-count` requires the Library footer and the multi-selection
 details panel to show the count with the localized `%d selected` entry. The
 Windows folder picker uses the same entry; the macOS folder picker keeps its own
-`Pin %d items to a folder` heading.
+`Pin %d items to a folder` heading. `mixed-selection-pin` requires Pin on a
+selection of pinned and unpinned items to pin all of them, and to unpin only
+when every selected item is already pinned.
 
 The adapters execute application behavior:
 

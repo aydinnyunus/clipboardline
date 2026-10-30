@@ -729,7 +729,12 @@ extension String {
         }
         changed([id]); return value
     }
-    func toggleFavorite(_ ids: [UUID]) throws { try mutate(ids) { $0.favorite.toggle(); if $0.favorite && $0.retainedAt == nil { $0.retainedAt = self.now() } } }
+    /// A mixed selection pins every item, as on Windows and as the action bar's
+    /// Unpin title assumes; only a selection that is already fully pinned unpins.
+    func toggleFavorite(_ ids: [UUID]) throws {
+        let pin = try records(ids).contains { !$0.favorite }
+        try mutate(ids) { $0.favorite = pin; if pin && $0.retainedAt == nil { $0.retainedAt = self.now() } }
+    }
     private func mutate(_ ids: [UUID], _ transform: (inout LibraryRecord) throws -> Void) throws {
         var values = try ids.map { id -> LibraryRecord in guard let value = try item(id) else { throw HistoryFiles.Failure.unsafeFile }; return value }
         for index in values.indices { try transform(&values[index]); values[index].updatedAt = now(); if values[index].retainedAt != nil { try ensureOwned(&values[index]) } }
