@@ -405,6 +405,8 @@ struct PublicLinkHTMLMetadata: Equatable, Sendable {
         let name = label.lowercased(), converted = CFStringConvertIANACharSetNameToEncoding((aliases[name] ?? name) as CFString)
         guard converted != 0xFFFF_FFFF else { return nil }
         return String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(converted))
+    }
+
     /// One pass over the document collecting `<meta>` values and the first `<title>` body, skipping
     /// comment, script and style content. Those bodies have no length of their own, so they are
     /// skipped by searching for the closing token from a marker that only moves forward: one failed
