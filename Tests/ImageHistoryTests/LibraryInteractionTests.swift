@@ -195,6 +195,16 @@ import XCTest
         _ = model.select(record.id); model.trash(); wait { model.ids.isEmpty && !model.loading }
         XCTAssertNil(model.inspected); XCTAssertTrue(model.selectedIDs.isEmpty)
     }
+    func testSubfolderTitleIncludesItsParentLikeWindows() throws {
+        let f = try SyntheticFixture(); defer { f.cleanup() }; let store = try library(f)
+        let parent = try store.createCollection("Parent"), child = try store.createCollection("Child", parent: parent)
+        let model = LibraryModel(store: store)
+        wait { model.collections.count == 2 && !model.loading }
+        model.changeScope(.collection(parent)); wait { model.query.scope == .collection(parent) && !model.loading }
+        XCTAssertEqual(model.title, "Parent")
+        model.changeScope(.collection(child)); wait { model.query.scope == .collection(child) && !model.loading }
+        XCTAssertEqual(model.title, "Parent / Child")
+    }
     func testInspectorEditsPersistAndFailedSaveKeepsDraftAndSelection() throws {
         let f = try SyntheticFixture(); defer { f.cleanup() }; let store = try library(f)
         let a = try XCTUnwrap(store.captureText("first")), b = try XCTUnwrap(store.captureText("second")); try store.retain([a.id,b.id])

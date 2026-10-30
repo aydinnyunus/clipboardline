@@ -540,6 +540,7 @@ enum HistoryTestRunner {
             ("testLibraryKeyboardGridRangesAllResultsFiltersAndEditingStayDistinct", libraryInteraction.testLibraryKeyboardGridRangesAllResultsFiltersAndEditingStayDistinct),
             ("testRapidQueriesCannotOverwriteLatestSearchAndRetainFocusOnMetadataChange", libraryInteraction.testRapidQueriesCannotOverwriteLatestSearchAndRetainFocusOnMetadataChange),
             ("testRemovingLastVisibleItemClearsInspectorAndFiltersRecoverSameScope", libraryInteraction.testRemovingLastVisibleItemClearsInspectorAndFiltersRecoverSameScope),
+            ("testSubfolderTitleIncludesItsParentLikeWindows", libraryInteraction.testSubfolderTitleIncludesItsParentLikeWindows),
             ("testInspectorEditsPersistAndFailedSaveKeepsDraftAndSelection", libraryInteraction.testInspectorEditsPersistAndFailedSaveKeepsDraftAndSelection),
             ("testMixedTransferExportAndDragPreserveRepresentationsOrderAndOriginals", libraryInteraction.testMixedTransferExportAndDragPreserveRepresentationsOrderAndOriginals),
             ("testYouTubeParserIgnoresHTMLAndRejectsMalformedOrUntrustedImages", libraryInteraction.testYouTubeParserIgnoresHTMLAndRejectsMalformedOrUntrustedImages),
