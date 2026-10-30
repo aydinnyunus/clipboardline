@@ -44,8 +44,8 @@
       {
         "id": "mixed-selection-pin",
         "behavior": "Pin on a selection that contains both pinned and unpinned items pins every item; only a selection that is already fully pinned unpins.",
-        "macos": "LibraryStore.toggleFavorite and Line.pinActiveSelection compute one target for the whole selection, matching the action bar, which offers Unpin only when every selected item is pinned.",
-        "windows": "Store.modify('pin') pins every selected item when any is unpinned (targetPin); model.test.cjs covers a mixed selection."
+        "macos": "LibraryStore.toggleFavorite and Line.pinActiveSelection compute one target for the whole selection, matching the action bar, which offers Unpin only when every selected item is pinned; LibraryKeyboardContractTests runs the library-pin-on-a-mixed-selection-pins-all-then-unpins-all scenario of contracts/library-keyboard.json.",
+        "windows": "Store.modify('pin') pins every selected item when any is unpinned (targetPin); model.test.cjs covers a mixed selection and renderer-ui.test.cjs runs the library-pin-on-a-mixed-selection-pins-all-then-unpins-all scenario of contracts/library-keyboard.json."
       }
     ]
   },
