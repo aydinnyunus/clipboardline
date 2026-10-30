@@ -86,9 +86,18 @@ import XCTest
 
     func testHTMLHonorsDeclaredMetaCharsetAndFallsBackToWindows1252() throws {
         let url = URL(string: "https://public.example.org/page")!, title = "Çiğdem Şişli İstanbul ıüö"
-        func page(_ html: String, _ encoding: String.Encoding) throws -> PublicLinkHTMLMetadata {
-            try PublicLinkHTMLMetadata(data: try XCTUnwrap(html.data(using: encoding)), url: url)
+        func page(_ html: String, _ encoding: String.Encoding, type: String = "text/html") throws -> PublicLinkHTMLMetadata {
+            try PublicLinkHTMLMetadata(data: try XCTUnwrap(html.data(using: encoding)), url: url, contentType: type)
         }
+        XCTAssertEqual(try page("<title>\(title)</title>", .windowsCP1254, type: "text/html; charset=windows-1254").title, title)
+        // The header wins over markup, an unknown header label falls through, and a UTF-8 BOM wins over a Latin-1 header.
+        XCTAssertEqual(try page("<meta charset=\"utf-8\"><title>\(title)</title>", .windowsCP1254, type: "text/html; charset=iso-8859-9").title, title)
+        XCTAssertEqual(try page("<meta charset=\"windows-1254\"><title>\(title)</title>", .windowsCP1254, type: "text/html; charset=bogus").title, title)
+        XCTAssertEqual(try page("<title>\(title)</title>", .utf8, type: "text/html; x-charset=windows-1254; charset=utf-8").title, title)
+        XCTAssertEqual(try page("\u{FEFF}<title>\(title)</title>", .utf8, type: "text/html; charset=iso-8859-1").title, title)
+        // An XML declaration counts for XHTML only.
+        XCTAssertEqual(try page("<?xml version=\"1.0\" encoding=\"windows-1254\"?><title>\(title)</title>", .utf8).title, title)
+        XCTAssertEqual(try page("<?xml version=\"1.0\" encoding=\"windows-1254\"?><html><head><title>\(title)</title>", .windowsCP1254, type: "application/xhtml+xml").title, title)
         XCTAssertEqual(try page("<html><head><meta charset=\"ISO-8859-9\"><title>\(title)</title>", .windowsCP1254).title, title)
         XCTAssertEqual(try page("<meta http-equiv=\"Content-Type\" content=\"text/html; charset=windows-1254\"><meta property=\"og:title\" content=\"\(title)\">", .windowsCP1254).title, title)
         // An unknown label falls through to the next declaration; a UTF-16 label in markup means UTF-8.
