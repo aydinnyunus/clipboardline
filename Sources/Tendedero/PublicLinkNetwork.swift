@@ -421,21 +421,51 @@ struct PublicLinkHTMLMetadata: Equatable, Sendable {
         /// Where a closing token lies at or after `position`. Requests for one token arrive in increasing
         /// order, so the stretch already walked is remembered per token: a search that found nothing runs
         /// once per document, and a search that hit only resumes from that hit.
-        func closingToken(_ token: String, atOrAfter position: String.Index) -> String.Index? {
-            if let known = closings[token], known.searched <= position {
-                guard let found = known.found else { return nil }
-                if found >= position { return found }
+        func closingToken(_ token: String, atOrAfter position: String.Index, endsWithTag: Bool = false) -> String.Index? {
+            var from = position
+            while true {
+                var found: String.Index?
+                if let known = closings[token], known.searched <= from {
+                    // A search that found nothing at or behind this point rules the whole tail out.
+                    guard let hit = known.found else { return nil }
+                    if hit >= from { found = hit }
+                }
+                if found == nil {
+                    found = from < html.endIndex
+                        ? html.range(of: token, options: .caseInsensitive, range: from..<html.endIndex)?.lowerBound
+                        : nil
+                    closings[token] = (from, found)
+                }
+                guard let candidate = found else { return nil }
+                guard endsWithTag else { return candidate }
+                // </titlex> is not a closing tag, so a rejected candidate must not end the search. The
+                // step past it goes through the same memo, which keeps the walk forward-only.
+                var after = html.index(candidate, offsetBy: token.count)
+                while after < html.endIndex, html[after].isWhitespace { after = html.index(after, offsetBy: 1) }
+                guard after < html.endIndex, html[after] == ">" else { from = html.index(after: candidate); continue }
+                return candidate
             }
-            let found = position < html.endIndex
-                ? html.range(of: token, options: .caseInsensitive, range: position..<html.endIndex)?.lowerBound
-                : nil
-            closings[token] = (position, found)
-            return found
         }
+        var nextAngle: (searched: String.Index, found: String.Index?)?
+        /// Where the next `>` lies at or after `position`, when it sits inside `window` characters. The
+        /// search is remembered the way a closing token is, and only ever moves forward, so a `>` that is
+        /// too far away for one opener is not walked again by the next. Without that memory each unclosed
+        /// opener repeats the same stretch and the parse costs the document size by itself.
         func tagEnd(after position: String.Index, window: Int) -> String.Index? {
             guard let lastAngle, lastAngle >= position else { return nil }
+            var found: String.Index?
+            if let known = nextAngle, known.searched <= position {
+                // A search that found nothing at or behind this point rules the whole tail out.
+                guard let hit = known.found else { return nil }
+                if hit >= position { found = hit }
+            }
+            if found == nil {
+                found = html.range(of: ">", range: position..<html.endIndex)?.lowerBound
+                nextAngle = (position, found)
+            }
             let limit = html.index(position, offsetBy: window, limitedBy: html.endIndex) ?? html.endIndex
-            return html.range(of: ">", range: position..<limit)?.lowerBound
+            guard let candidate = found, candidate < limit else { return nil }
+            return candidate
         }
         func opens(_ token: String, at position: String.Index) -> Bool {
             guard let end = html.index(position, offsetBy: token.count, limitedBy: html.endIndex) else { return false }
@@ -454,7 +484,7 @@ struct PublicLinkHTMLMetadata: Equatable, Sendable {
                 let name = opens("<script", at: open) ? "script" : "style"
                 let afterName = html.index(open, offsetBy: name.count + 1)
                 guard !isWord(afterName), let close = tagEnd(after: afterName, window: tagAttributeWindowCharacters) else { continue }
-                guard let end = closingToken("</" + name, atOrAfter: html.index(after: close)) else { continue }
+                guard let end = closingToken("</" + name, atOrAfter: html.index(after: close), endsWithTag: true) else { continue }
                 var after = html.index(end, offsetBy: name.count + 2)
                 while after < html.endIndex, html[after].isWhitespace { after = html.index(after, offsetBy: 1) }
                 guard after < html.endIndex, html[after] == ">" else { continue }
@@ -478,7 +508,7 @@ struct PublicLinkHTMLMetadata: Equatable, Sendable {
                 guard !isWord(afterName), let close = tagEnd(after: afterName, window: tagAttributeWindowCharacters) else { continue }
                 let bodyStart = html.index(after: close)
                 let bodyLimit = html.index(bodyStart, offsetBy: titleBodyWindowCharacters, limitedBy: html.endIndex) ?? html.endIndex
-                guard let end = closingToken("</title", atOrAfter: bodyStart), end < bodyLimit else { continue }
+                guard let end = closingToken("</title", atOrAfter: bodyStart, endsWithTag: true), end < bodyLimit else { continue }
                 var after = html.index(end, offsetBy: 7)
                 while after < bodyLimit, html[after].isWhitespace { after = html.index(after, offsetBy: 1) }
                 guard after < bodyLimit, html[after] == ">" else { continue }

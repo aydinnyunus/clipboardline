@@ -183,6 +183,21 @@ import XCTest
         XCTAssertLessThan(elapsedMilliseconds, 250, "4 600 unclosed title bodies took \(elapsedMilliseconds) ms")
     }
 
+    func testThousandsOfUnclosedMetaOpenersWithOneAngleAtTheWindowEdgeStayInsideTheBudget() throws {
+        // One `>` parked past every opener's attribute window: each unclosed `<meta` has to look for the tag
+        // end it cannot reach, so an unmemoized search walks the same window once per opener and the count of
+        // openers decides the cost. The search is remembered here, so it is paid once per document.
+        let url = URL(string: "https://synthetic.example.invalid/article")!
+        let openers = String(repeating: "<meta ", count: 5_000)
+        let page = openers + String(repeating: "x", count: PublicLinkHTMLMetadata.metadataWindowBytes - openers.utf8.count - 1) + ">"
+        XCTAssertEqual(page.utf8.count, PublicLinkHTMLMetadata.metadataWindowBytes)
+        let started = DispatchTime.now().uptimeNanoseconds
+        let metadata = try PublicLinkHTMLMetadata(data: Data(page.utf8), url: url)
+        let elapsedMilliseconds = Int((DispatchTime.now().uptimeNanoseconds - started) / 1_000_000)
+        XCTAssertNil(metadata.title)
+        XCTAssertLessThan(elapsedMilliseconds, 250, "5 000 unclosed meta openers took \(elapsedMilliseconds) ms")
+    }
+
     func testMetadataPastTheParsedWindowIsNotRead() throws {
         let url = URL(string: "https://synthetic.example.invalid/article")!
         let page = "<html><body>" + String(repeating: "<!-- x -->", count: 20_000) + #"<meta property="og:title" content="Tail">"#
@@ -222,6 +237,20 @@ import XCTest
         XCTAssertNil(afterScript.author, "the script body hides its own metadata")
         let openScript = try PublicLinkHTMLMetadata(data: Data("<html><script>var a = 1;<meta property='og:title' content='StillRead'>".utf8), url: url)
         XCTAssertEqual(openScript.title, "StillRead")
+    }
+
+    func testAClosingTagThatIsNotOneNeitherEndsTheRegionNorDropsTheTitle() throws {
+        // \</titlex\> and \</scriptx\> start like a closing tag but are not one. Stopping the title
+        // search at such a candidate loses the title the document really declares, and ending a script
+        // region at one publishes the script's own text as the page title, so a candidate counts only
+        // when the tag it names actually ends there.
+        let url = URL(string: "https://public.example.org/page")!
+        let title = try PublicLinkHTMLMetadata(data: Data("<html><head><title>Good</titlex> Rest</title>".utf8), url: url)
+        XCTAssertEqual(title.title, "Good Rest")
+        let script = try PublicLinkHTMLMetadata(data: Data(#"<html><script>"<title>fake";</scriptx>data <title>Real</title></script>"#.utf8), url: url)
+        XCTAssertNil(script.title, "the script region still covers everything up to the real closing tag")
+        let spaced = try PublicLinkHTMLMetadata(data: Data("<html><head><title>Ok</title >".utf8), url: url)
+        XCTAssertEqual(spaced.title, "Ok", "white space before the closing angle bracket is still a close")
     }
 
     func testOnlyTheFirst256MetaTagsAreConsidered() throws {
