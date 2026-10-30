@@ -94,15 +94,15 @@ const collapse = value => value.replace(/\s+/g, ' ').trim();
 // reaching its '>' and the 2000 body characters stay the budgets the pattern carried.
 function titleBody(html) {
   const opener = /<title/gi, closer = /<\/title>/gi;
-  let hit, closerAt = -1, closerFrom = 0, angleAt = -1, angleFrom = 0;
+  let hit, closerAt = -1, angleAt = -1;
   while ((hit = opener.exec(html))) {
     const start = hit.index + 6;
-    if (angleAt < start) angleAt = html.indexOf('>', angleFrom = start);
+    if (angleAt < start) angleAt = html.indexOf('>', start);
     if (angleAt < 0) break;
     if (angleAt - start > 4096) continue;
     const body = angleAt + 1;
-    if (body > closerFrom) {
-      closer.lastIndex = closerFrom = body;
+    if (closerAt < body) {
+      closer.lastIndex = body;
       const found = closer.exec(html);
       closerAt = found ? found.index : -1;
       if (!found) break;
