@@ -86,6 +86,18 @@ function decodeHTML(bytes, type = '') {
   if (label) return new TextDecoder(label).decode(bytes);
   try { return new TextDecoder('utf-8', {fatal: true}).decode(bytes); } catch { return new TextDecoder('windows-1252').decode(bytes); }
 }
+// The parsed window is a prefix of the document, so a multi-byte sequence its edge cuts is incomplete
+// rather than invalid. Left in place it fails the fatal UTF-8 check and drags the whole window into the
+// Windows-1252 fallback, so every accented character of the title arrives corrupted; dropping the dangling
+// bytes keeps the read UTF-8. The same trim the macOS parser applies in window(of:).
+const headWindow = bytes => {
+  const window = bytes.subarray(0, 32 * 1024);
+  if (bytes.length <= window.length) return window;
+  let end = window.length;
+  while (end > 0 && (window[end - 1] & 0xc0) === 0x80) end -= 1;
+  if (end > 0 && window[end - 1] >= 0xc0) end -= 1;
+  return window.subarray(0, end);
+}
 const collapse = value => value.replace(/\s+/g, ' ').trim();
 // The same document as /<title[^>]{0,4096}>([\s\S]{0,2000}?)<\/title>/i, but read in a single pass: a pattern
 // with a bounded body re-walks that body for every opening tag, so markup that repeats <title without ever
@@ -115,7 +127,10 @@ function titleBody(html) {
 function meta(html, name) {
   for (const match of html.matchAll(/<meta\b([^>]{0,4096})>/gi)) {
     const attributes = {};
-    for (const attr of match[1].matchAll(/([\w:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g)) attributes[attr[1].toLowerCase()] = attr[2] ?? attr[3];
+    // An attribute name is anchored at its first character, so a run that finds no "=" gives up at once
+    // instead of retrying from every character inside it; without the anchor a page built out of long
+    // name-only attributes costs the square of its length.
+    for (const attr of match[1].matchAll(/(?<![\w:-])([\w:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g)) attributes[attr[1].toLowerCase()] = attr[2] ?? attr[3];
     if ([attributes.property, attributes.name].includes(name)) return entities(attributes.content || '').slice(0, 1000);
   }
   return '';
@@ -133,7 +148,7 @@ async function linkMetadata(input, fetcher = metadataFetch) {
   const response = await fetcher(url.href); if (!/text\/html|application\/xhtml/i.test(response.type)) return {title: url.hostname};
   // Metadata sits in the head of a real page, so only this window is decoded and parsed: the work one
   // preview may cost stops being a function of the download. Same 32 KiB head window as the macOS parser.
-  const html = decodeHTML(response.bytes.subarray(0, 32 * 1024), response.type);
+  const html = decodeHTML(headWindow(response.bytes), response.type);
   // Collapse layout whitespace only in display text; og:image stays a URL.
   const title = collapse(meta(html, 'og:title')) || collapse(entities(titleBody(html).replace(/<[^>]*>/g, ''))) || url.hostname;
   let thumbnail = meta(html, 'og:image');
