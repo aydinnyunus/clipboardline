@@ -47,6 +47,17 @@ import XCTest
         XCTAssertEqual(model.selectedIDs, [tagged.id])
         XCTAssertEqual(try store.item(tagged.id)?.text, tagged.text)
     }
+    func testPinningAMixedLibrarySelectionPinsEveryItemAndOnlyAFullyPinnedSelectionUnpins() throws {
+        let f = try SyntheticFixture(); defer { f.cleanup() }; let store = try library(f)
+        let ids = try (0..<3).map { index -> UUID in let record = try XCTUnwrap(store.captureText("pin note \(index)")); try store.retain([record.id]); return record.id }
+        try store.toggleFavorite([ids[0]])
+        let model = LibraryModel(store: store)
+        wait { model.ids.count == 3 && !model.loading }
+        model.selectAll(); model.favorite()
+        XCTAssertEqual(try store.records(ids).map(\.favorite), [true, true, true])
+        model.favorite()
+        XCTAssertEqual(try store.records(ids).map(\.favorite), [false, false, false])
+    }
     func testNativeSearchEscapeRoutesImmediateSelectAllToCollectionAndLeavesOtherEditorsAlone() throws {
         _ = NSApplication.shared
         let f = try SyntheticFixture(); defer { f.cleanup() }; let store = try library(f)
