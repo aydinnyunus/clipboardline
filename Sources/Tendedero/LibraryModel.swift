@@ -104,9 +104,15 @@ import Combine
         switch query.scope {
         case .saved: L("My library"); case .favorites: L("Favorites"); case .unorganized: L("Unorganized")
         case .recent, .shelf: L("Recent copies"); case .trash: L("Trash")
-        case let .collection(id): collections.first { $0.id == id }?.name ?? L("Folder")
+        case let .collection(id): folderPath(id) ?? L("Folder")
         case let .tag(id): "#" + (tags.first { $0.id == id }?.name ?? L("Tag"))
         }
+    }
+    /// A subfolder reads "Parent / Child", as on Windows.
+    private func folderPath(_ id: UUID) -> String? {
+        guard let folder = collections.first(where: { $0.id == id }) else { return nil }
+        let parent = folder.parentID.flatMap { parentID in collections.first { $0.id == parentID }?.name }
+        return [parent, folder.name].compactMap { $0 }.joined(separator: " / ")
     }
     func clearNotice() { notice = nil; store.notice = nil }
     func report(_ message: String) { notice = message }
