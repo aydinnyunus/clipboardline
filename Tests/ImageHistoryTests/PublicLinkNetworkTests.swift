@@ -154,6 +154,35 @@ import XCTest
         XCTAssertLessThan(elapsedMilliseconds, 250, "unterminated title runs took \(elapsedMilliseconds) ms")
     }
 
+    func testAnAttributeNameFarLongerThanAnyRealAttributeIsStillReadOnce() throws {
+        // A pattern that bounds the length of an attribute name has to retry that bound at every start
+        // position it tries, so a name longer than the bound costs the document by itself. A scanner
+        // visits each character whatever the name weighs, and the tag behind it is still read.
+        let url = URL(string: "https://public.example.org/page")!
+        let page = #"<html><head><meta "# + String(repeating: "a", count: 4_000)
+            + #"="x"><meta property="og:title" content="After"><title>Behind</title>"#
+        let started = DispatchTime.now().uptimeNanoseconds
+        let metadata = try PublicLinkHTMLMetadata(data: Data(page.utf8), url: url)
+        let elapsedMilliseconds = Int((DispatchTime.now().uptimeNanoseconds - started) / 1_000_000)
+        XCTAssertEqual(metadata.title, "After")
+        XCTAssertLessThan(elapsedMilliseconds, 250, "a 4 000 character attribute name took \(elapsedMilliseconds) ms")
+    }
+
+    func testThousandsOfTitleOpenersWithoutACloseStayInsideTheBudget() throws {
+        // Every opener here is well formed, so each one is handed a body and the search for the
+        // </title> that never arrives starts over. The scan remembers one failed search per document
+        // instead, so the count of openers stops mattering.
+        let url = URL(string: "https://synthetic.example.invalid/article")!
+        let openers = String(repeating: "<title>", count: 4_600)
+        let page = openers + String(repeating: "x", count: PublicLinkHTMLMetadata.metadataWindowBytes - openers.utf8.count)
+        XCTAssertEqual(page.utf8.count, PublicLinkHTMLMetadata.metadataWindowBytes)
+        let started = DispatchTime.now().uptimeNanoseconds
+        let metadata = try PublicLinkHTMLMetadata(data: Data(page.utf8), url: url)
+        let elapsedMilliseconds = Int((DispatchTime.now().uptimeNanoseconds - started) / 1_000_000)
+        XCTAssertNil(metadata.title)
+        XCTAssertLessThan(elapsedMilliseconds, 250, "4 600 unclosed title bodies took \(elapsedMilliseconds) ms")
+    }
+
     func testMetadataPastTheParsedWindowIsNotRead() throws {
         let url = URL(string: "https://synthetic.example.invalid/article")!
         let page = "<html><body>" + String(repeating: "<!-- x -->", count: 20_000) + #"<meta property="og:title" content="Tail">"#
