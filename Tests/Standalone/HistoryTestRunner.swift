@@ -521,6 +521,7 @@ enum HistoryTestRunner {
             ("testCorruptSourceBlocksMigrationAndDoesNotOverwriteArchive", libraryStore.testCorruptSourceBlocksMigrationAndDoesNotOverwriteArchive),
             ("testFolderTagOrFavoriteRetainsAcrossUnassignUnpinAndExpiry", libraryStore.testFolderTagOrFavoriteRetainsAcrossUnassignUnpinAndExpiry),
             ("testCollectionsAreManyToManyNestedAndRemovalDoesNotDeleteContent", libraryStore.testCollectionsAreManyToManyNestedAndRemovalDoesNotDeleteContent),
+            ("testPinnedImageWhoseManagedCopyIsGoneCanStillLeaveTheShelfGoToTrashAndRestore", libraryStore.testPinnedImageWhoseManagedCopyIsGoneCanStillLeaveTheShelfGoToTrashAndRestore),
             ("testMovingFromParentRemovesChildMembershipButKeepsOtherFoldersAndOriginal", libraryStore.testMovingFromParentRemovesChildMembershipButKeepsOtherFoldersAndOriginal),
             ("testDomainFilterIncludesSubdomainsWithLiteralHostBoundaries", libraryStore.testDomainFilterIncludesSubdomainsWithLiteralHostBoundaries),
             ("testTagRenameSearchTurkishAndLiteralSQLCharacters", libraryStore.testTagRenameSearchTurkishAndLiteralSQLCharacters),
