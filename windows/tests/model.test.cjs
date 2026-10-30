@@ -36,6 +36,10 @@ test('a failed command rolls back in place so background jobs keep the item obje
  assert.throws(()=>s.modify('createFolder',{name:''}));
  for(const held of [text,image,other])assert.ok(s.data.items.includes(held));
  assert.equal(text.text,'before');assert.deepEqual(s.data.items.map(item=>item.id),[other.id,image.id,text.id]);
+ // A corrupt library can repeat an id; rolling back must keep both entries' own content.
+ const twin={...structuredClone(text),text:'twin'};s.data.items.push(twin);
+ assert.throws(()=>s.modify('createFolder',{name:''}));
+ assert.deepEqual(s.data.items.filter(item=>item.id===text.id).map(item=>item.text),['before','twin']);assert.ok(s.data.items.includes(text)&&s.data.items.includes(twin));
 }));
 test('safe JSON persistence reloads content and stores rollback copy',()=>fixture((s,_time,dir)=>{const item=s.insert('text','private locally saved');s.modify('pin',{ids:[item.id]});assert.equal(new Store(dir).item(item.id).pinned,true);assert.ok(fs.existsSync(path.join(dir,'library.json.backup')));if(process.platform!=='win32')assert.equal(fs.statSync(path.join(dir,'library.json')).mode&0o777,0o600);else{const powershell=path.join(process.env.SystemRoot,'System32','WindowsPowerShell','v1.0','powershell.exe');const raw=require('node:child_process').execFileSync(powershell,['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',path.join(__dirname,'..','native','protect-directory.ps1'),'-Directory',dir,'-Check'],{windowsHide:true,encoding:'utf8',env:require('../lib/windows-environment.cjs').windowsEnvironment()});const acl=JSON.parse(raw);assert.equal(acl.protected,true);assert.ok(acl.principals.includes(acl.currentUser));assert.deepEqual([...new Set(acl.principals)].sort(),[acl.currentUser,'S-1-5-18','S-1-5-32-544'].sort());}}));
 test('added and renamed tags share the macOS 64-grapheme and control-character rule',()=>fixture(s=>{

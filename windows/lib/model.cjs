@@ -345,9 +345,10 @@ class Store {
     }
     if (persist && changed) this.persist();
   }
-  liveItems(){return new Map(this.data.items.map(item=>[item.id,item]));}
+  liveItems(){return [...this.data.items];}
   // Restore in place: OCR and link-preview jobs hold item objects across awaits and drop their result once store.data.items no longer includes them.
-  rollback(before,live){before.items=before.items.map(saved=>{const item=live.get(saved.id);if(!item)return saved;for(const key of Object.keys(item))delete item[key];return Object.assign(item,saved);});this.data=before;}
+  // The snapshot and the live list were taken together, so match by position: each live object is reused at most once, even if a corrupt library repeats an id.
+  rollback(before,live){before.items=before.items.map((saved,index)=>{const item=live[index];if(!item||item.id!==saved.id)return saved;for(const key of Object.keys(item))delete item[key];return Object.assign(item,saved);});this.data=before;}
   modify(action, payload = {}) {
     const before=clone(this.data), live=this.liveItems(), undo=clone(this.undoStack), trashUndo=clone(this.trashUndoStack);
     try{return this.modifyTransaction(action,payload);}catch(error){if(!error.committed){this.rollback(before,live);this.undoStack=undo;this.trashUndoStack=trashUndo;}throw error;}
