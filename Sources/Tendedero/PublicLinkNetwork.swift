@@ -410,7 +410,6 @@ struct PublicLinkHTMLMetadata: Equatable, Sendable {
     /// skipped by searching for the closing token from a marker that only moves forward: one failed
     /// search settles every later candidate in the same document.
     private static func read(_ html: String) -> (metadata: [String: String], title: String?) {
-        let attributes = try! NSRegularExpression(pattern: #"([A-Za-z_:][A-Za-z0-9_:.-]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))"#)
         var metadata: [String: String] = [:]
         var title: String?
         var examinedTags = 0
@@ -467,12 +466,7 @@ struct PublicLinkHTMLMetadata: Equatable, Sendable {
                 // budget is skipped while the rest of the document, title included, stays reachable.
                 guard examinedTags < 256 else { cursor = html.index(after: close); continue }
                 examinedTags += 1
-                let raw = String(html[afterName..<close]); var values: [String: String] = [:]
-                for attribute in attributes.matches(in: raw, range: NSRange(raw.startIndex..., in: raw)) {
-                    guard let key = Range(attribute.range(at: 1), in: raw),
-                          let value = (2...4).compactMap({ Range(attribute.range(at: $0), in: raw) }).first else { continue }
-                    values[String(raw[key]).lowercased()] = Self.entities(String(raw[value]))
-                }
+                let values = Self.attributeValues(in: String(html[afterName..<close]))
                 if let key = values["property"] ?? values["name"], let value = values["content"], metadata[key.lowercased()] == nil { metadata[key.lowercased()] = String(value.prefix(2000)) }
                 cursor = html.index(after: close)
                 continue
@@ -482,7 +476,7 @@ struct PublicLinkHTMLMetadata: Equatable, Sendable {
                 guard !isWord(afterName), let close = tagEnd(after: afterName, window: tagAttributeWindowCharacters) else { continue }
                 let bodyStart = html.index(after: close)
                 let bodyLimit = html.index(bodyStart, offsetBy: titleBodyWindowCharacters, limitedBy: html.endIndex) ?? html.endIndex
-                guard let end = html.range(of: "</title", options: .caseInsensitive, range: bodyStart..<bodyLimit)?.lowerBound else { continue }
+                guard let end = closingToken("</title", atOrAfter: bodyStart), end < bodyLimit else { continue }
                 var after = html.index(end, offsetBy: 7)
                 while after < bodyLimit, html[after].isWhitespace { after = html.index(after, offsetBy: 1) }
                 guard after < bodyLimit, html[after] == ">" else { continue }
@@ -492,6 +486,53 @@ struct PublicLinkHTMLMetadata: Equatable, Sendable {
             }
         }
         return (metadata, title)
+    }
+    /// The attributes of one tag, read in a single pass with the rules an attribute pattern applies: a
+    /// name that runs on, or a quote that never closes, cannot make a later position re-walk the
+    /// characters before it. Units are UTF-16, the width the pattern saw, so that a non-ASCII space
+    /// separates a name from its `=` and ends an unquoted value here exactly as it did there.
+    private static func attributeValues(in raw: String) -> [String: String] {
+        let units = Array(raw.utf16)
+        var values: [String: String] = [:]
+        func isNameStart(_ unit: UInt16) -> Bool { unit >= 65 && unit <= 90 || unit >= 97 && unit <= 122 || unit == 95 || unit == 58 }
+        func isName(_ unit: UInt16) -> Bool { isNameStart(unit) || unit >= 48 && unit <= 57 || unit == 45 || unit == 46 }
+        func isSpace(_ unit: UInt16) -> Bool {
+            unit >= 9 && unit <= 13 || unit == 32 || unit == 133 || unit == 160 || unit == 5760
+                || unit >= 8192 && unit <= 8202 || unit == 8232 || unit == 8233 || unit == 8239
+                || unit == 8287 || unit == 12288
+        }
+        func isValueStop(_ unit: UInt16) -> Bool { isSpace(unit) || unit == 34 || unit == 39 || unit == 61 || unit == 60 || unit == 62 || unit == 96 }
+        func skippingSpaces(from start: Int) -> Int {
+            var position = start
+            while position < units.count, isSpace(units[position]) { position += 1 }
+            return position
+        }
+        var index = 0
+        while index < units.count {
+            guard isNameStart(units[index]) else { index += 1; continue }
+            var nameEnd = index + 1
+            while nameEnd < units.count, isName(units[nameEnd]) { nameEnd += 1 }
+            let equals = skippingSpaces(from: nameEnd)
+            guard equals < units.count, units[equals] == 61 else { index = equals; continue }
+            let value = skippingSpaces(from: equals + 1)
+            guard value < units.count else { break }
+            let key = String(decoding: units[index..<nameEnd], as: UTF16.self).lowercased()
+            let quote = units[value]
+            if quote == 34 || quote == 39 {
+                var close = value + 1
+                while close < units.count, units[close] != quote { close += 1 }
+                guard close < units.count else { index = value + 1; continue }
+                values[key] = Self.entities(String(decoding: units[(value + 1)..<close], as: UTF16.self))
+                index = close + 1
+                continue
+            }
+            var end = value
+            while end < units.count, !isValueStop(units[end]) { end += 1 }
+            guard end > value else { index = value + 1; continue }
+            values[key] = Self.entities(String(decoding: units[value..<end], as: UTF16.self))
+            index = end
+        }
+        return values
     }
     private static func replacing(_ pattern: String, in value: String, with replacement: String) -> String {
         guard let regex = try? NSRegularExpression(pattern: pattern) else { return value }
