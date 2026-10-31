@@ -124,16 +124,31 @@ function titleBody(html) {
   return '';
 }
 
-function meta(html, name) {
-  for (const match of html.matchAll(/<meta\b([^>]{0,4096})>/gi)) {
+// The two metadata fields a preview needs, read in one forward pass: a pattern that re-matches every <meta
+// tag for each field costs the parsed window per field, and a tag that never reaches its '>' makes the
+// bounded attribute body retry across its whole budget. One pass answers both fields and the end of each tag
+// is remembered, so the same `>` is never looked for twice; 4096 characters to reach a `>` stays the budget
+// the pattern carried, and each field still keeps its own first match.
+function metaFields(html) {
+  const found = {};
+  const opener = /<meta\b/gi;
+  let angleAt = -1, hit;
+  while ((hit = opener.exec(html))) {
+    const start = hit.index + 5;
+    if (angleAt < start) angleAt = html.indexOf('>', start);
+    if (angleAt < 0) break;
+    if (angleAt - start > 4096) continue;
     const attributes = {};
     // An attribute name is anchored at its first character, so a run that finds no "=" gives up at once
     // instead of retrying from every character inside it; without the anchor a page built out of long
     // name-only attributes costs the square of its length.
-    for (const attr of match[1].matchAll(/(?<![\w:-])([\w:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g)) attributes[attr[1].toLowerCase()] = attr[2] ?? attr[3];
-    if ([attributes.property, attributes.name].includes(name)) return entities(attributes.content || '').slice(0, 1000);
+    for (const attr of html.slice(start, angleAt).matchAll(/(?<![\w:-])([\w:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g)) attributes[attr[1].toLowerCase()] = attr[2] ?? attr[3];
+    for (const key of [attributes.property, attributes.name]) {
+      if ((key === 'og:title' || key === 'og:image') && found[key] === undefined) found[key] = entities(attributes.content || '').slice(0, 1000);
+    }
+    if (found['og:title'] !== undefined && found['og:image'] !== undefined) break;
   }
-  return '';
+  return found;
 }
 async function linkMetadata(input, fetcher = metadataFetch) {
   metadataGuard(new URL(input));
@@ -150,8 +165,9 @@ async function linkMetadata(input, fetcher = metadataFetch) {
   // preview may cost stops being a function of the download. Same 32 KiB head window as the macOS parser.
   const html = decodeHTML(headWindow(response.bytes), response.type);
   // Collapse layout whitespace only in display text; og:image stays a URL.
-  const title = collapse(meta(html, 'og:title')) || collapse(entities(titleBody(html).replace(/<[^>]*>/g, ''))) || url.hostname;
-  let thumbnail = meta(html, 'og:image');
+  const fields = metaFields(html);
+  const title = collapse(fields['og:title'] || '') || collapse(entities(titleBody(html).replace(/<[^>]*>/g, ''))) || url.hostname;
+  let thumbnail = fields['og:image'] || '';
   if (thumbnail) try { thumbnail = new URL(thumbnail, response.url).href; } catch { thumbnail = ''; }
   return {title: title.slice(0, 500), thumbnail};
 }
