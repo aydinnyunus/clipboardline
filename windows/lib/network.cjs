@@ -124,20 +124,44 @@ function titleBody(html) {
   return '';
 }
 
+// The end of a tag is its first `>` that is not inside a quoted attribute value: markup may quote a `>`
+// inside a value (a description that quotes another tag), and cutting the tag there would hand the rest of
+// that value to the attribute parser as if it were attributes of the tag itself. The plain `>` is still
+// located with the native search and only checked for a quote in front of it, so a page made of tags without
+// quoted values costs what it cost before. A quote that is never closed is not a value: the plain `>` stands
+// in that case, which is how such a tag was read before, so a stray apostrophe cannot end the pass early.
+const quotes = /["']/g;
+function tagEnd(html, from) {
+  let at = from;
+  for (;;) {
+    const angle = html.indexOf('>', at);
+    if (angle < 0) return -1;
+    quotes.lastIndex = at;
+    const quote = quotes.exec(html);
+    if (!quote || quote.index > angle) return angle;
+    const close = html.indexOf(quote[0], quote.index + 1);
+    if (close < 0) return angle;
+    at = close + 1;
+  }
+}
+
 // The two metadata fields a preview needs, read in one forward pass: a pattern that re-matches every <meta
 // tag for each field costs the parsed window per field, and a tag that never reaches its '>' makes the
 // bounded attribute body retry across its whole budget. One pass answers both fields and the end of each tag
 // is remembered, so the same `>` is never looked for twice; 4096 characters to reach a `>` stays the budget
-// the pattern carried, and each field still keeps its own first match.
+// the pattern carried, and each field still keeps its own first match. Scanning resumes after the end of each
+// tag that was read, so a `<meta` quoted inside another tag's attribute stays that attribute's text: read as
+// a tag it would let a page hand its own description a fake og:title.
 function metaFields(html) {
   const found = {};
   const opener = /<meta\b/gi;
   let angleAt = -1, hit;
   while ((hit = opener.exec(html))) {
     const start = hit.index + 5;
-    if (angleAt < start) angleAt = html.indexOf('>', start);
+    if (angleAt < start) angleAt = tagEnd(html, start);
     if (angleAt < 0) break;
     if (angleAt - start > 4096) continue;
+    opener.lastIndex = angleAt + 1;
     const attributes = {};
     // An attribute name is anchored at its first character, so a run that finds no "=" gives up at once
     // instead of retrying from every character inside it; without the anchor a page built out of long
