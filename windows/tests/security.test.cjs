@@ -124,3 +124,25 @@ test('a tag whose value quotes markup past the read budget cannot forge a title'
 // into the text that follows it: doing that would swallow the page's own og:title and og:image into one
 // attribute run and leave the preview with a title taken from `<title>`.
 test('an apostrophe inside an unquoted value does not move the end of the tag',async()=>{const article='https://synthetic.example.invalid/article';const page="<!doctype html><html><head><meta name=it's content=\"x\"><meta property=\"og:title\" content=\"Later\"><meta property=\"og:image\" content=\"https://synthetic.example.invalid/a.png\"><title>It's fine</title></head></html>";const result=await linkMetadata(article,async()=>({bytes:Buffer.from(page),type:'text/html',url:article}));assert.equal(result.title,'Later','a value that is not quoted must not swallow the og:title after it');assert.equal(result.thumbnail,'https://synthetic.example.invalid/a.png','the og:image after such a tag is still the one the page declares');});
+
+// A quoted value that is closed past the tag's own `>` is the shape the two searches inside `tagEnd` are
+// remembered for: 2 000 `<meta ` openers sit in front of one value whose closing quote lies beyond the only
+// `>` in the page, so every opener asks the same question about the same bytes. Answered fresh each time, the
+// openers price the page by themselves. The title is written in front of that region, which is also where a
+// browser finds it: the tag opened by the first `<meta` swallows everything up to the closing quote, so a
+// title written after it sits inside that tag and is not a title at all.
+test('openers in front of a value closed past the angle stay inside the budget',async()=>{const article='https://synthetic.example.invalid/article';const openers='<meta '.repeat(2000),filler='x'.repeat(8000);const page='<!doctype html><html><head><title>T</title>'+openers+'a="'+filler+'>'+filler+'"'+'</head><body>hi</body></html>';assert.ok(Buffer.byteLength(page)<32*1024,'page = '+Buffer.byteLength(page));const started=Date.now();const result=await linkMetadata(article,async()=>({bytes:Buffer.from(page),type:'text/html',url:article}));const elapsed=Date.now()-started;assert.equal(result.title,'T','the title written in front of the region must still answer');assert.ok(elapsed<60,'2 000 openers in front of one long value took '+elapsed+' ms');});
+
+// The review's own shape, sized so openers x value fills the whole read window: 2 700 `<meta ` openers in
+// front of one value whose closing quote is the last byte of the page, with no `>` behind it. Every opener asks
+// the same question about the same bytes and the answer sits at the far end, so a lookup that is not
+// remembered prices the page once per opener. Windows caps a tag whose `>` sits more than 4 096 characters
+// away, which is why this page is cheap here; the case pins that the cap does not cost the page its title.
+test('openers in front of a value closed at the end of the window stay inside the budget',async()=>{const article='https://synthetic.example.invalid/article';const head='<!doctype html><html><head><title>T</title>',openers=2700;const filler=Math.floor((32*1024-Buffer.byteLength(head)-6*openers-4)/2);const page=head+'<meta '.repeat(openers)+'a="'+'x'.repeat(filler)+'>'+'y'.repeat(filler)+'"';assert.ok(Buffer.byteLength(page)<=32*1024,'page = '+Buffer.byteLength(page));const started=Date.now();const result=await linkMetadata(article,async()=>({bytes:Buffer.from(page),type:'text/html',url:article}));const elapsed=Date.now()-started;assert.equal(result.title,'T','the title written in front of the region must still answer');assert.ok(elapsed<60,'2 700 openers in front of a value closed at the end of the window took '+elapsed+' ms');});
+
+// A tag built out of 6 500 four-character quoted values asks "where does my `>` sit" and "where does this
+// value close" once per value. The window cap bounds the answer either way, so this is pinned as behaviour:
+// the tag spends more than the 4 096 characters a tag may read reaching its `>` and is skipped, and the
+// well-formed tag after it still answers - a search that stopped early or resumed at the wrong byte would
+// lose that tag instead.
+test('a tag built out of short quoted values answers the tag that follows it',async()=>{const article='https://synthetic.example.invalid/article';const values=' a=""'.repeat(6500),trailer='<meta property="og:title" content="Real Title"><title>T</title></head></html>';const padding='y'.repeat(32*1024-('<!doctype html><html><head><meta').length-values.length-trailer.length-1);const page='<!doctype html><html><head><meta'+values+padding+'>'+trailer;assert.equal(Buffer.byteLength(page),32*1024,'page = '+Buffer.byteLength(page));const started=Date.now();const result=await linkMetadata(article,async()=>({bytes:Buffer.from(page),type:'text/html',url:article}));const elapsed=Date.now()-started;assert.equal(result.title,'Real Title','the oversized tag must not swallow the tag after it');assert.ok(elapsed<60,'a tag of 6 500 quoted values took '+elapsed+' ms');});

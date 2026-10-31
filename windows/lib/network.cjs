@@ -124,27 +124,51 @@ function titleBody(html) {
   return '';
 }
 
-// The end of a tag is its first `>` that is not inside a quoted attribute value: markup may quote a `>`
-// inside a value (a description that quotes another tag), and cutting the tag there would hand the rest of
-// that value to the attribute parser as if it were attributes of the tag itself. Only a quote that starts a
-// value counts - one preceded by `=` - because an apostrophe inside an unquoted value (`name=it's`) is not a
-// value and treating it as one drags the tag end into the text after it, where the real `og:title` is. The
-// span searched for that quote is the tag's own, so a page of tags that quote nothing costs what it cost
-// before. A quote that is never closed is not a value: the plain `>` stands in that case, which is how such a
-// tag was read before, so a stray apostrophe cannot end the pass early.
-const quotes = /(?<==\s*)["']/;
-function tagEnd(html, from) {
+// Both searches inside a tag end are forward-only memories: a `>` already located is reused while it still
+// lies ahead of the character being read, and the quote that closes a value is looked up once per quote
+// character. A tag built out of short quoted values asks both questions once per value, and an unmemoized
+// question walks the rest of the window each time, so the values price the window by themselves. macOS keeps
+// the same two memories in `quotedTagEnd`.
+function closingQuote(html, state, mark, after) {
+  const known = state.closes.get(mark);
+  if (known && known.searched <= after) {
+    // A search that found nothing at or behind this point rules the whole tail out.
+    if (known.found < 0) return -1;
+    if (known.found >= after) return known.found;
+  }
+  const found = html.indexOf(mark, after);
+  state.closes.set(mark, { searched: after, found });
+  return found;
+}
+
+// The first character of [start, limit] that opens a quoted value: a quote with only spaces between it and
+// its `=`, and that `=` inside the same span. This is what slicing the span to run `/(?<==\s*)["']/` over
+// it answered, answered without the copy: a tag of four-character values used to slice the remaining window
+// once per value, which is the cost the shape below measures. Walking back stops at `start` because that is
+// where the tag's own text begins, so a `=` belonging to the text before the tag cannot open a value here.
+function valueQuote(html, start, limit) {
+  for (let index = start; index <= limit; index++) {
+    const mark = html[index];
+    if (mark !== '"' && mark !== "'") continue;
+    let before = index;
+    while (before > start && /\s/.test(html[before - 1])) before -= 1;
+    if (before > start && html[before - 1] === '=') return index;
+  }
+  return -1;
+}
+
+const tagEndState = () => ({ angle: -2, closes: new Map() });
+function tagEnd(html, from, state) {
   let at = from;
   for (;;) {
-    const angle = html.indexOf('>', at);
+    if (state.angle < at) state.angle = html.indexOf('>', at);
+    const angle = state.angle;
     if (angle < 0) return -1;
     // One character behind the span is read so a quote that opens the tag's first value still sees its `=`.
     const back = at > 0 ? at - 1 : 0;
-    const quote = quotes.exec(html.slice(back, angle + 1));
-    if (!quote) return angle;
-    const open = back + quote.index;
-    if (open < at) return angle;
-    const close = html.indexOf(html[open], open + 1);
+    const open = valueQuote(html, back, angle);
+    if (open < 0 || open < at) return angle;
+    const close = closingQuote(html, state, html[open], open + 1);
     if (close < 0) return angle;
     at = close + 1;
   }
@@ -160,10 +184,11 @@ function tagEnd(html, from) {
 function metaFields(html) {
   const found = {};
   const opener = /<meta\b/gi;
+  const end = tagEndState();
   let angleAt = -1, hit;
   while ((hit = opener.exec(html))) {
     const start = hit.index + 5;
-    if (angleAt < start) angleAt = tagEnd(html, start);
+    if (angleAt < start) { angleAt = tagEnd(html, start, end); end.angle = angleAt; }
     if (angleAt < 0) break;
     // The scan resumes after the end of every tag that was located, budget or not: a tag too long to read
     // still ends somewhere, and starting the next search inside its value would let a page hide a fake

@@ -491,6 +491,24 @@ struct PublicLinkHTMLMetadata: Equatable, Sendable {
 
 
         var nextQuote: (searched: String.Index, found: String.Index?)?
+        var quoteCloses: [Character: (searched: String.Index, found: String.Index?)] = [:]
+
+        /// Where the next quote of `mark` lies at or after `position`, remembered the way the `>` search is.
+        /// The quote that closes a value is looked up once per value, and a tag whose value is closed past its
+        /// own `>` asks that question again for every opener in front of it: without the memory each of them
+        /// rewalks the value and everything behind it, so the openers price the document by themselves.
+        func closingQuote(_ mark: Character, after position: String.Index) -> String.Index? {
+            if let known = quoteCloses[mark], known.searched <= position {
+                // A search that found nothing at or behind this point rules the whole tail out.
+                guard let hit = known.found else { return nil }
+                if hit >= position { return hit }
+            }
+            let found = position < html.endIndex
+                ? html.range(of: String(mark), range: position..<html.endIndex)?.lowerBound
+                : nil
+            quoteCloses[mark] = (position, found)
+            return found
+        }
 
         /// Where the next `>` lies at or after `position`, remembered so the search only ever moves forward.
         func angleSearch(after position: String.Index) -> String.Index? {
@@ -546,8 +564,7 @@ struct PublicLinkHTMLMetadata: Equatable, Sendable {
             var at = position
             while let candidate = angleSearch(after: at) {
                 guard let quote = valueQuote(atOrAfter: at), quote <= candidate else { return candidate }
-                let closing = html.range(of: String(html[quote]), range: html.index(after: quote)..<html.endIndex)
-                guard let closedAt = closing?.lowerBound else { return candidate }
+                guard let closedAt = closingQuote(html[quote], after: html.index(after: quote)) else { return candidate }
                 at = html.index(after: closedAt)
             }
             return nil

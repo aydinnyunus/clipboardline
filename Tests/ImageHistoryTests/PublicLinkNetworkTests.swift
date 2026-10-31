@@ -226,6 +226,71 @@ import XCTest
         XCTAssertLessThan(elapsedMilliseconds, 250, "1 500 rejected script candidates took \(elapsedMilliseconds) ms")
     }
 
+    func testOpenersInFrontOfAValueClosedPastTheAngleStayInsideTheBudget() throws {
+        // One attribute value whose closing quote sits past the only `>` in the document, with no `>` after
+        // it, and a `<meta ` opener in front of it for every byte of padding. Each opener asks the same
+        // question - does a quoted value swallow this tag end - and the answer lies in the same stretch of
+        // bytes every time. Looked up fresh, that is one walk over the value per opener: the openers set the
+        // cost by themselves, which is the shape the value quote and the tag end are remembered for.
+        let url = URL(string: "https://synthetic.example.invalid/article")!
+        let openers = String(repeating: "<meta ", count: 2_000)
+        let filler = String(repeating: "x", count: 8_000)
+        // The title is read before the pathological region, which is also where a browser finds it: the tag
+        // opened by the first `<meta` swallows everything up to the closing quote, so a title written after it
+        // is inside that tag and not a title at all. Pinned in front, the page still has to be paid for by its
+        // length and not by its openers, and the metadata it really carries still has to answer.
+        let page = "<!doctype html><html><head><title>T</title>" + openers + #"a=""# + filler + ">" + filler + #"""#
+            + "</head><body>hi</body></html>"
+        XCTAssertLessThan(page.utf8.count, PublicLinkHTMLMetadata.metadataWindowBytes)
+        let started = DispatchTime.now().uptimeNanoseconds
+        let metadata = try PublicLinkHTMLMetadata(data: Data(page.utf8), url: url)
+        let elapsedMilliseconds = Int((DispatchTime.now().uptimeNanoseconds - started) / 1_000_000)
+        XCTAssertEqual(metadata.title, "T")
+        XCTAssertLessThan(elapsedMilliseconds, 250, "2 000 openers in front of one long value took \(elapsedMilliseconds) ms")
+    }
+
+    func testOpenersInFrontOfAValueClosedAtTheEndOfTheWindowStayInsideTheBudget() throws {
+        // The shape the review names, sized so openers x value is as large as the parse window allows: 2 700
+        // `<meta ` openers in front of one value whose closing quote is the last byte of the window, with no
+        // `>` behind it. Every opener asks the same question - does a quoted value swallow this tag end - and
+        // the answer sits at the far end of the document. Looked up fresh, each lookup re-walks a mid-string
+        // range of the document, so the openers price the page by themselves: this page used to take over a
+        // second to read, which is what the remembered closing quote is here to stop.
+        let url = URL(string: "https://synthetic.example.invalid/article")!
+        let head = "<!doctype html><html><head><title>T</title>"
+        let openers = 2_700
+        let filler = (PublicLinkHTMLMetadata.metadataWindowBytes - head.utf8.count - 6 * openers - 4) / 2
+        let page = head + String(repeating: "<meta ", count: openers) + #"a=""#
+            + String(repeating: "x", count: filler) + ">" + String(repeating: "y", count: filler) + #"""#
+        XCTAssertEqual(page.utf8.count, PublicLinkHTMLMetadata.metadataWindowBytes)
+        let started = DispatchTime.now().uptimeNanoseconds
+        let metadata = try PublicLinkHTMLMetadata(data: Data(page.utf8), url: url)
+        let elapsedMilliseconds = Int((DispatchTime.now().uptimeNanoseconds - started) / 1_000_000)
+        XCTAssertEqual(metadata.title, "T")
+        XCTAssertLessThan(elapsedMilliseconds, 250, "\(openers) openers in front of a value closed at the end of the window took \(elapsedMilliseconds) ms")
+    }
+
+    func testATagBuiltOutOfShortQuotedValuesIsNotChargedTheWindowPerValue() throws {
+        // A tag made of 6 500 four-character quoted values, with its `>` near the parsed window's edge: every
+        // value asks where the tag ends and where its own closing quote lies. Those two searches are
+        // forward-only memories, so the tag costs its own length rather than its length times the window. It
+        // spends more than the 4 096 characters a tag may read reaching its `>`, so it is skipped - and the
+        // well-formed tag after it still answers, which pins that the end was found where it really is.
+        let url = URL(string: "https://synthetic.example.invalid/article")!
+        let head = "<!doctype html><html><head><meta"
+        let values = String(repeating: #" a="""#, count: 6_500)
+        let trailer = #"""<meta property="og:title" content="Real Title"><title>T</title></head></html>"""#
+        let padding = String(repeating: "y", count: PublicLinkHTMLMetadata.metadataWindowBytes
+            - head.utf8.count - values.utf8.count - trailer.utf8.count - 1)
+        let page = head + values + padding + ">" + trailer
+        XCTAssertEqual(page.utf8.count, PublicLinkHTMLMetadata.metadataWindowBytes)
+        let started = DispatchTime.now().uptimeNanoseconds
+        let metadata = try PublicLinkHTMLMetadata(data: Data(page.utf8), url: url)
+        let elapsedMilliseconds = Int((DispatchTime.now().uptimeNanoseconds - started) / 1_000_000)
+        XCTAssertEqual(metadata.title, "Real Title")
+        XCTAssertLessThan(elapsedMilliseconds, 250, "a tag of 6 500 quoted values took \(elapsedMilliseconds) ms")
+    }
+
     func testMetadataPastTheParsedWindowIsNotRead() throws {
         let url = URL(string: "https://synthetic.example.invalid/article")!
         let page = "<html><body>" + String(repeating: "<!-- x -->", count: 20_000) + #"<meta property="og:title" content="Tail">"#
