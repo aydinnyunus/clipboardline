@@ -463,7 +463,33 @@ struct PublicLinkHTMLMetadata: Equatable, Sendable {
             }
         }
         var nextAngle: (searched: String.Index, found: String.Index?)?
-        /// Where the next `>` lies at or after `position`, when it sits inside `window` characters. The
+
+        /// Characters from the start of the document to a position, answered by a walker that only ever moves
+        /// forward. Each tag asks for two positions - its opener and the `>` that ends it - and both sequences
+        /// arrive in increasing order, so one pass over the document answers every tag. Measuring a tag on its
+        /// own with `index(_:offsetBy:limitedBy:)` walked the whole budget for every tag whatever the tag's own
+        /// length was: 32 KiB of closed `<meta>` tags cost 97.5 ms that way, against 2.3 ms before this scan
+        /// existed. A walker asked for a position behind where it stands starts over, so a caller that ever
+        /// moved backwards gets a measured distance rather than a wrong one.
+        var angleWalk = (at: html.startIndex, characters: 0)
+        var openerWalk = (at: html.startIndex, characters: 0)
+        func characters(to position: String.Index, walking walker: inout (at: String.Index, characters: Int)) -> Int {
+            if walker.at > position {
+                walker.at = html.startIndex
+                walker.characters = 0
+            }
+            while walker.at < position {
+                walker.at = html.index(after: walker.at)
+                walker.characters += 1
+            }
+            return walker.characters
+        }
+        /// Whether `end` lies within `window` characters of `position`, in the grapheme steps the budgets count.
+        func spans(_ position: String.Index, to end: String.Index, within window: Int) -> Bool {
+            characters(to: end, walking: &angleWalk) - characters(to: position, walking: &openerWalk) < window
+        }
+
+        /// Where the next `>` lies at or after `position`, when it sits inside `window` characters. The `>`
         /// search is remembered the way a closing token is, and only ever moves forward, so a `>` that is
         /// too far away for one opener is not walked again by the next. Without that memory each unclosed
         /// opener repeats the same stretch and the parse costs the document size by itself.
@@ -479,8 +505,7 @@ struct PublicLinkHTMLMetadata: Equatable, Sendable {
                 found = html.range(of: ">", range: position..<html.endIndex)?.lowerBound
                 nextAngle = (position, found)
             }
-            let limit = html.index(position, offsetBy: window, limitedBy: html.endIndex) ?? html.endIndex
-            guard let candidate = found, candidate < limit else { return nil }
+            guard let candidate = found, spans(position, to: candidate, within: window) else { return nil }
             return candidate
         }
         func opens(_ token: String, at position: String.Index) -> Bool {
