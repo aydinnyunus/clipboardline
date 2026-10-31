@@ -417,17 +417,31 @@ struct PublicLinkHTMLMetadata: Equatable, Sendable {
         var examinedTags = 0
         var cursor = html.startIndex
         var closings: [String: (searched: String.Index, found: String.Index?)] = [:]
+        var verifiedClosings: [String: (searched: String.Index, found: String.Index?)] = [:]
         let lastAngle = html.lastIndex(of: ">")
         /// Where a closing token lies at or after `position`. Requests for one token arrive in increasing
-        /// order, so the stretch already walked is remembered per token: a search that found nothing runs
-        /// once per document, and a search that hit only resumes from that hit.
+        /// order, so two forward-only records answer them: `closings` remembers how far a raw search for
+        /// the token ran, `verifiedClosings` remembers the answer once a candidate has been checked. The
+        /// second record matters because a walk that rejects `</titlex>` candidates pushes the raw record
+        /// past them; without it a later opener starts behind that record and walks the same stretch again.
         func closingToken(_ token: String, atOrAfter position: String.Index, endsWithTag: Bool = false) -> String.Index? {
+            if endsWithTag, let known = verifiedClosings[token], known.searched <= position {
+                // A verified answer covers every position from the one it was asked at up to the tag itself.
+                if let hit = known.found {
+                    if hit >= position { return hit }
+                } else {
+                    return nil
+                }
+            }
             var from = position
             while true {
                 var found: String.Index?
                 if let known = closings[token], known.searched <= from {
                     // A search that found nothing at or behind this point rules the whole tail out.
-                    guard let hit = known.found else { return nil }
+                    guard let hit = known.found else {
+                        if endsWithTag { verifiedClosings[token] = (position, nil) }
+                        return nil
+                    }
                     if hit >= from { found = hit }
                 }
                 if found == nil {
@@ -435,14 +449,16 @@ struct PublicLinkHTMLMetadata: Equatable, Sendable {
                         ? html.range(of: token, options: .caseInsensitive, range: from..<html.endIndex)?.lowerBound
                         : nil
                     closings[token] = (from, found)
+                    if found == nil, endsWithTag { verifiedClosings[token] = (position, nil) }
                 }
                 guard let candidate = found else { return nil }
                 guard endsWithTag else { return candidate }
                 // </titlex> is not a closing tag, so a rejected candidate must not end the search. The
-                // step past it goes through the same memo, which keeps the walk forward-only.
+                // step past it goes through the raw record, which keeps the walk forward-only.
                 var after = html.index(candidate, offsetBy: token.count)
                 while after < html.endIndex, html[after].isWhitespace { after = html.index(after, offsetBy: 1) }
                 guard after < html.endIndex, html[after] == ">" else { from = html.index(after: candidate); continue }
+                verifiedClosings[token] = (position, candidate)
                 return candidate
             }
         }

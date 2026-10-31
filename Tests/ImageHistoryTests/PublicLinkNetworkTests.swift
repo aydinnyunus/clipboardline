@@ -198,6 +198,34 @@ import XCTest
         XCTAssertLessThan(elapsedMilliseconds, 250, "5 000 unclosed meta openers took \(elapsedMilliseconds) ms")
     }
 
+    func testThousandsOfRejectedTitleCandidatesStayInsideTheBudget() throws {
+        // Every `<title>` is followed by `</titlex>`, which is not a closing tag, so each opener has to rule
+        // that candidate out and keep looking. The rejected candidates and the verified answer are remembered
+        // apart: a walk that steps past them may not push the raw search record so far forward that the next
+        // opener repeats the stretch it left behind.
+        let url = URL(string: "https://synthetic.example.invalid/article")!
+        let page = String(repeating: "<title></titlex>", count: 1_800)
+        XCTAssertLessThan(page.utf8.count, PublicLinkHTMLMetadata.metadataWindowBytes)
+        let started = DispatchTime.now().uptimeNanoseconds
+        let metadata = try PublicLinkHTMLMetadata(data: Data(page.utf8), url: url)
+        let elapsedMilliseconds = Int((DispatchTime.now().uptimeNanoseconds - started) / 1_000_000)
+        XCTAssertNil(metadata.title)
+        XCTAssertLessThan(elapsedMilliseconds, 250, "1 800 rejected title candidates took \(elapsedMilliseconds) ms")
+    }
+
+    func testThousandsOfRejectedScriptCandidatesStayInsideTheBudget() throws {
+        // The same shape inside the script scope, where `</scriptx>` is the candidate that has to be ruled
+        // out. Ruling it out is paid once per document, not once per opener.
+        let url = URL(string: "https://synthetic.example.invalid/article")!
+        let page = String(repeating: "<script></scriptx>", count: 1_500)
+        XCTAssertLessThan(page.utf8.count, PublicLinkHTMLMetadata.metadataWindowBytes)
+        let started = DispatchTime.now().uptimeNanoseconds
+        let metadata = try PublicLinkHTMLMetadata(data: Data(page.utf8), url: url)
+        let elapsedMilliseconds = Int((DispatchTime.now().uptimeNanoseconds - started) / 1_000_000)
+        XCTAssertNil(metadata.title)
+        XCTAssertLessThan(elapsedMilliseconds, 250, "1 500 rejected script candidates took \(elapsedMilliseconds) ms")
+    }
+
     func testMetadataPastTheParsedWindowIsNotRead() throws {
         let url = URL(string: "https://synthetic.example.invalid/article")!
         let page = "<html><body>" + String(repeating: "<!-- x -->", count: 20_000) + #"<meta property="og:title" content="Tail">"#
