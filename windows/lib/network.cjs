@@ -126,20 +126,25 @@ function titleBody(html) {
 
 // The end of a tag is its first `>` that is not inside a quoted attribute value: markup may quote a `>`
 // inside a value (a description that quotes another tag), and cutting the tag there would hand the rest of
-// that value to the attribute parser as if it were attributes of the tag itself. The plain `>` is still
-// located with the native search and only checked for a quote in front of it, so a page made of tags without
-// quoted values costs what it cost before. A quote that is never closed is not a value: the plain `>` stands
-// in that case, which is how such a tag was read before, so a stray apostrophe cannot end the pass early.
-const quotes = /["']/g;
+// that value to the attribute parser as if it were attributes of the tag itself. Only a quote that starts a
+// value counts - one preceded by `=` - because an apostrophe inside an unquoted value (`name=it's`) is not a
+// value and treating it as one drags the tag end into the text after it, where the real `og:title` is. The
+// span searched for that quote is the tag's own, so a page of tags that quote nothing costs what it cost
+// before. A quote that is never closed is not a value: the plain `>` stands in that case, which is how such a
+// tag was read before, so a stray apostrophe cannot end the pass early.
+const quotes = /(?<==\s*)["']/;
 function tagEnd(html, from) {
   let at = from;
   for (;;) {
     const angle = html.indexOf('>', at);
     if (angle < 0) return -1;
-    quotes.lastIndex = at;
-    const quote = quotes.exec(html);
-    if (!quote || quote.index > angle) return angle;
-    const close = html.indexOf(quote[0], quote.index + 1);
+    // One character behind the span is read so a quote that opens the tag's first value still sees its `=`.
+    const back = at > 0 ? at - 1 : 0;
+    const quote = quotes.exec(html.slice(back, angle + 1));
+    if (!quote) return angle;
+    const open = back + quote.index;
+    if (open < at) return angle;
+    const close = html.indexOf(html[open], open + 1);
     if (close < 0) return angle;
     at = close + 1;
   }
@@ -150,8 +155,8 @@ function tagEnd(html, from) {
 // bounded attribute body retry across its whole budget. One pass answers both fields and the end of each tag
 // is remembered, so the same `>` is never looked for twice; 4096 characters to reach a `>` stays the budget
 // the pattern carried, and each field still keeps its own first match. Scanning resumes after the end of each
-// tag that was read, so a `<meta` quoted inside another tag's attribute stays that attribute's text: read as
-// a tag it would let a page hand its own description a fake og:title.
+// tag, so a `<meta` quoted inside another tag's attribute stays that attribute's text: read as a tag it would
+// let a page hand its own description a fake og:title.
 function metaFields(html) {
   const found = {};
   const opener = /<meta\b/gi;
@@ -160,8 +165,11 @@ function metaFields(html) {
     const start = hit.index + 5;
     if (angleAt < start) angleAt = tagEnd(html, start);
     if (angleAt < 0) break;
-    if (angleAt - start > 4096) continue;
+    // The scan resumes after the end of every tag that was located, budget or not: a tag too long to read
+    // still ends somewhere, and starting the next search inside its value would let a page hide a fake
+    // `og:title` in a description long enough to pass the budget.
     opener.lastIndex = angleAt + 1;
+    if (angleAt - start > 4096) continue;
     const attributes = {};
     // An attribute name is anchored at its first character, so a run that finds no "=" gives up at once
     // instead of retrying from every character inside it; without the anchor a page built out of long
