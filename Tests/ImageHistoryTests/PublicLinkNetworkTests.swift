@@ -289,6 +289,58 @@ import XCTest
         XCTAssertEqual(metadata.title, "Fallback")
     }
 
+    func testAMetaTagOpenedInsideAnotherTagsValueCannotAnswerAField() throws {
+        // A `<meta>` typed inside an attribute value is that value's text, not the start of a tag. Ending a
+        // tag at the first `>` inside a quoted value hands the rest of the value to the attribute parser as
+        // the tag's own attributes, so such a `<meta>` becomes the next tag and the page can name its own
+        // `og:title` or `og:image` from inside a description. Windows ends a tag the same way in
+        // windows/lib/network.cjs: the same page must not answer differently on the two platforms.
+        let url = URL(string: "https://public.example.org/page")!
+        let quotingATitle = #"<html><head><meta name="description" content="see <meta property='og:title' content='Injected'> for details"><title>Gerçek Başlık</title></head></html>"#
+        XCTAssertEqual(try PublicLinkHTMLMetadata(data: Data(quotingATitle.utf8), url: url).title, "Gerçek Başlık",
+                       "a meta tag inside an attribute value must not answer og:title")
+        let quotingAnImage = #"<html><head><meta name="description" content="<meta property='og:image' content='/injected.png'>"><meta property="og:image" content="/real.png"><title>T</title></head></html>"#
+        XCTAssertEqual(try PublicLinkHTMLMetadata(data: Data(quotingAnImage.utf8), url: url).thumbnailURL?.path, "/real.png",
+                       "an injected og:image must lose to the one the page declares")
+    }
+
+    func testAMetaTagWhoseValueQuotesMarkupPastTheBudgetCannotForgeATitle() throws {
+        // The 4 096-character budget says how much of a tag may be read, not where the next tag begins. The
+        // search has to resume after the tag it located, or a page buries an `og:title` inside a description
+        // long enough for this parser to skip it, and the buried one answers instead of the `<title>`.
+        let url = URL(string: "https://public.example.org/page")!
+        let page = #"<html><head><meta name="description" content="<meta property='og:title' content='Fake'>"#
+            + String(repeating: "x", count: 5_000)
+            + #" end"><title>Gerçek Başlık</title></head></html>"#
+        XCTAssertEqual(try PublicLinkHTMLMetadata(data: Data(page.utf8), url: url).title, "Gerçek Başlık")
+    }
+
+    func testAnApostropheThatDoesNotFollowAnEqualsSignDoesNotMoveTheEndOfATag() throws {
+        // `name=it's` is an unquoted value with an apostrophe in it, not a value that opens and never closes.
+        // Reading it as one drags the end of the tag into the text after it and swallows the `og:title` and
+        // `og:image` the page declares. Only a quote that follows `=` opens a value on Windows either.
+        let url = URL(string: "https://public.example.org/page")!
+        let page = "<html><head><meta name=it's content=\"x\"><meta property=\"og:title\" content=\"Later\"><meta property=\"og:image\" content=\"https://public.example.org/a.png\"><title>It's fine</title></head></html>"
+        let metadata = try PublicLinkHTMLMetadata(data: Data(page.utf8), url: url)
+        XCTAssertEqual(metadata.title, "Later", "a value that is not quoted must not swallow the og:title after it")
+        XCTAssertEqual(metadata.thumbnailURL?.path, "/a.png")
+    }
+
+    func testThousandsOfClosedMetaTagsStayInsideTheBudget() throws {
+        // The budget a tag may spend reaching its `>` has to be measured against that tag's own length. Asking
+        // for the position that many characters ahead instead prices every tag at the whole budget, so short
+        // tags cost tags x budget: 32 KiB of closed `<meta>` took 100.9 ms that way, 2.3 ms before the scan
+        // existed, and 5.2 ms measured with the walker that replaced it.
+        let url = URL(string: "https://public.example.org/page")!
+        let page = String(repeating: "<meta>", count: 5_461)
+        XCTAssertEqual(page.utf8.count, PublicLinkHTMLMetadata.metadataWindowBytes - 2)
+        let started = DispatchTime.now().uptimeNanoseconds
+        let metadata = try PublicLinkHTMLMetadata(data: Data(page.utf8), url: url)
+        let elapsedMilliseconds = Int((DispatchTime.now().uptimeNanoseconds - started) / 1_000_000)
+        XCTAssertNil(metadata.title)
+        XCTAssertLessThan(elapsedMilliseconds, 250, "5 461 closed meta tags took \(elapsedMilliseconds) ms")
+    }
+
     func testHTMLExtractsBoundedTextAndOneSafeThumbnailWithoutExecutingOrFollowingOtherResources() throws {
         let url = URL(string: "https://public.example.org/page")!
         let html = #"<html><!--<meta property='og:title' content='comment'>--><script><meta property='og:title' content='script'>fetch('http://localhost')</script><title>fallback</title><meta content='A &amp; B &#x1F30D;' property='og:title'><meta name=author content='Writer'><meta property='og:image' content='/cover.png'><img src='http://localhost/tracking'><iframe src='http://localhost'></iframe></html>"#

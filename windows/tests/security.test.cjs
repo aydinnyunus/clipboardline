@@ -113,9 +113,6 @@ test('a meta tag opened inside another tag attribute cannot answer a metadata fi
 // A quote that is never closed is not an attribute value, so the plain `>` still ends the tag: the pass must
 // carry on to the next tag rather than treat the rest of the window as one unfinished value. Refusing to end
 // such a tag early is what keeps a stray apostrophe from costing the page its title.
-// A quote that is never closed is not an attribute value, so the plain `>` still ends the tag: the pass must
-// carry on to the next tag rather than treat the rest of the window as one unfinished value. Refusing to end
-// such a tag early is what keeps a stray apostrophe from costing the page its title.
 test('a meta tag with an unclosed quote keeps the metadata pass running',async()=>{const article='https://synthetic.example.invalid/article';const page="<!doctype html><html><head><meta name=it's content=\"x\"><meta property=\"og:title\" content=\"Later\"><title>T</title></head></html>";const result=await linkMetadata(article,async()=>({bytes:Buffer.from(page),type:'text/html',url:article}));assert.equal(result.title,'Later','a tag with an unclosed quote must not end the pass');const cut="<!doctype html><html><head><meta property=\"og:title\" content=\"never closed";const truncated=await linkMetadata(article,async()=>({bytes:Buffer.from(cut),type:'text/html',url:article}));assert.equal(truncated.title,'synthetic.example.invalid','an unfinished value yields no title, and no throw');});
 
 // A tag too long to read is still skipped by the 4 096-character budget, but its value is text, not markup:

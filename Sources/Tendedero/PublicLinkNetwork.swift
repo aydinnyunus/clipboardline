@@ -489,23 +489,77 @@ struct PublicLinkHTMLMetadata: Equatable, Sendable {
             characters(to: end, walking: &angleWalk) - characters(to: position, walking: &openerWalk) < window
         }
 
-        /// Where the next `>` lies at or after `position`, when it sits inside `window` characters. The `>`
-        /// search is remembered the way a closing token is, and only ever moves forward, so a `>` that is
-        /// too far away for one opener is not walked again by the next. Without that memory each unclosed
-        /// opener repeats the same stretch and the parse costs the document size by itself.
-        func tagEnd(after position: String.Index, window: Int) -> String.Index? {
+
+        var nextQuote: (searched: String.Index, found: String.Index?)?
+
+        /// Where the next `>` lies at or after `position`, remembered so the search only ever moves forward.
+        func angleSearch(after position: String.Index) -> String.Index? {
             guard let lastAngle, lastAngle >= position else { return nil }
-            var found: String.Index?
             if let known = nextAngle, known.searched <= position {
                 // A search that found nothing at or behind this point rules the whole tail out.
                 guard let hit = known.found else { return nil }
-                if hit >= position { found = hit }
+                if hit >= position { return hit }
             }
-            if found == nil {
-                found = html.range(of: ">", range: position..<html.endIndex)?.lowerBound
-                nextAngle = (position, found)
+            let found = html.range(of: ">", range: position..<html.endIndex)?.lowerBound
+            nextAngle = (position, found)
+            return found
+        }
+        /// Where the first quote that opens an attribute value lies at or after `position`. A quote opens a
+        /// value only where `=` precedes it, spaces allowed between: the apostrophe in `name=it's` is ordinary
+        /// text, and reading it as a value start drags the end of the tag into the markup after it. Like the
+        /// `>` search, this one is remembered and only moves forward, so a page whose tags quote nothing pays
+        /// for one pass over itself rather than one pass per tag.
+        func valueQuote(atOrAfter position: String.Index) -> String.Index? {
+            if let known = nextQuote, known.searched <= position {
+                guard let hit = known.found else { return nil }
+                if hit >= position { return hit }
             }
-            guard let candidate = found, spans(position, to: candidate, within: window) else { return nil }
+            var probe = position
+            while probe < html.endIndex {
+                let mark = html[probe]
+                if mark == "\"" || mark == "'" {
+                    var before = probe
+                    while before > position {
+                        let previous = html.index(before: before)
+                        guard html[previous].isWhitespace else { break }
+                        before = previous
+                    }
+                    let sign = before == position ? position : html.index(before: before)
+                    if html[sign] == "=" {
+                        nextQuote = (position, probe)
+                        return probe
+                    }
+                }
+                probe = html.index(after: probe)
+            }
+            nextQuote = (position, nil)
+            return nil
+        }
+        /// Where a `<meta>` tag ends: its first `>` that is not inside a quoted attribute value. A page may
+        /// quote a `>` inside a value - a description that quotes another tag - and ending the tag at that
+        /// `>` hands the rest of the value to the attribute parser as if it were this tag's own attributes, so
+        /// a `<meta>` written inside a description becomes the next tag and the page names its own `og:title`
+        /// or `og:image` from inside a sentence. A quote that never closes is not a value, so such a tag ends
+        /// at its plain `>` as it did before. Windows ends the tag the same way in windows/lib/network.cjs,
+        /// which carries the measurements for this shape.
+        func quotedTagEnd(after position: String.Index) -> String.Index? {
+            var at = position
+            while let candidate = angleSearch(after: at) {
+                guard let quote = valueQuote(atOrAfter: at), quote <= candidate else { return candidate }
+                let closing = html.range(of: String(html[quote]), range: html.index(after: quote)..<html.endIndex)
+                guard let closedAt = closing?.lowerBound else { return candidate }
+                at = html.index(after: closedAt)
+            }
+            return nil
+        }
+        /// Where the next `>` lies at or after `position`, when it sits inside `window` characters. The
+        /// search itself is `angleSearch`: remembered the way a closing token is, it only ever moves
+        /// forward, so a `>` too far away for one opener is not walked again by the next. Without that
+        /// memory each unclosed opener repeats the same stretch and the parse costs the document size
+        /// by itself.
+        func tagEnd(after position: String.Index, window: Int) -> String.Index? {
+            guard let candidate = angleSearch(after: position) else { return nil }
+            guard spans(position, to: candidate, within: window) else { return nil }
             return candidate
         }
         func opens(_ token: String, at position: String.Index) -> Bool {
@@ -534,10 +588,15 @@ struct PublicLinkHTMLMetadata: Equatable, Sendable {
             }
             if opens("<meta", at: open) {
                 let afterName = html.index(open, offsetBy: 5)
-                guard !isWord(afterName), let close = tagEnd(after: afterName, window: metaAttributeWindowCharacters) else { continue }
-                // The count limits which tags are read, not where reading stops: metadata behind the
-                // budget is skipped while the rest of the document, title included, stays reachable.
-                guard examinedTags < 256 else { cursor = html.index(after: close); continue }
+                guard !isWord(afterName), let close = quotedTagEnd(after: afterName) else { continue }
+                // How much of a tag may be read is not where the next tag begins. The search resumes
+                // after the tag that was located whatever its length, otherwise a tag whose value quotes
+                // markup past the budget holds the next search inside its own text and hands the page a
+                // `<meta>` of its own invention. The character budget and the 256-tag cap are unchanged.
+                guard spans(afterName, to: close, within: metaAttributeWindowCharacters), examinedTags < 256 else {
+                    cursor = html.index(after: close)
+                    continue
+                }
                 examinedTags += 1
                 let values = Self.attributeValues(in: String(html[afterName..<close]))
                 if let key = values["property"] ?? values["name"], let value = values["content"], metadata[key.lowercased()] == nil { metadata[key.lowercased()] = String(value.prefix(2000)) }
